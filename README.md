@@ -51,9 +51,27 @@ const review = Discern.type(Schema.String).pipe(
 
 `review(change)` is an `Effect` requiring an Effect `DecisionModel`.
 
+## Contents
+
+- [Status](#status) · [Install](#install)
+- **Why** — [Why not just `if (await model(...))`?](#why-not-just-if-await-model)
+- **Patterns** — [One observation, many patterns](#one-observation-many-patterns) ·
+  [Input-aware decisions](#input-aware-decisions) ·
+  [Semantic patterns](#semantic-patterns) ·
+  [Pattern algebra](#pattern-algebra) ·
+  [Mix deterministic and semantic](#mix-deterministic-and-semantic-patterns) ·
+  [Exhaustive classification](#exhaustive-semantic-classification)
+- **Inspection** — [Compiled plans](#inspectable-compiled-plans) ·
+  [Stable identity](#stable-identity) · [Traces](#traces)
+- **Running it** — [Observations, recording and replay](#observations-recording-and-replay) ·
+  [Budgets](#budgets) · [Evaluation and calibration](#evaluation-and-calibration) ·
+  [Provider-neutral](#provider-neutral)
+- **Routing** — [Procedures](#procedures)
+- [Mental model](#mental-model) · [License](#license)
+
 ## Status
 
-Early and unstable (`0.2.x`). It targets Effect v4 release candidates and
+Early and unstable (`0.3.x`). It targets Effect v4 release candidates and
 `effect/unstable/ai`, so both the Effect APIs underneath it and Discern's own
 surface can still change between minor versions.
 
@@ -68,7 +86,12 @@ npm install
 npm run check
 ```
 
-`effect` is a peer dependency (`>=4.0.0-rc.116 <5`).
+`effect` is a peer dependency (`>=4.0.0-rc.116 <5`). Note that `effect@latest`
+is still 3.x, so v4 has to be asked for by tag:
+
+```bash
+npm install effect@rc
+```
 
 There is a runnable tour in `examples/walkthrough.mjs`:
 
@@ -497,24 +520,31 @@ deterministic structure already settles cost no model call at all.
 
 Discern only depends on Effect `DecisionModel`.
 
-For TypeSafe / Jev:
+For TypeSafe / Jev. Both packages publish v4 under the `rc` tag — their
+`latest` is a 3.x release and a placeholder respectively, so neither works
+without it:
 
 ```bash
-npm install discern effect @effect/ai-typesafe
+npm install effect@rc @effect/ai-typesafe@rc
 ```
+
+`TypeSafeClient` needs an `HttpClient`, so the stack is three layers deep:
 
 ```ts
-import { Effect } from "effect"
-import {
-  TypeSafeClient,
-  TypeSafeDecisionModel
-} from "@effect/ai-typesafe"
+import { Effect, Layer } from "effect"
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
+import { TypeSafeClient, TypeSafeDecisionModel } from "@effect/ai-typesafe"
 
-const program = review(change).pipe(
-  Effect.provide(TypeSafeDecisionModel.layer({ model: "jev-latest" })),
-  Effect.provide(TypeSafeClient.layerConfig())
+const DecisionModelLayer = TypeSafeDecisionModel.layer({ model: "jev-latest" }).pipe(
+  Layer.provide(TypeSafeClient.layerConfig()),
+  Layer.provide(FetchHttpClient.layer)
 )
+
+const program = review(change).pipe(Effect.provide(DecisionModelLayer))
 ```
+
+`test/integration.types.ts` compiles exactly this wiring against the real
+packages, so the snippet above cannot drift from them.
 
 Any other Effect `DecisionModel` can run the same Discern program, and
 `Discern.Model.intercept` decorates it without the provider package knowing:
@@ -695,8 +725,10 @@ decision was asked about the same input, and its scope is wherever it was used
 most recently. Record each run into its own store when you want a faithful
 per-run tree.
 
-`Discern.Model.scope("name")` is the underlying primitive and works on any
+`Discern.Model.region("name")` is the underlying primitive and works on any
 Effect, so you can nest by your own concepts rather than only by procedure.
+It is not called a scope because Effect's `Scope` is about resource lifetime;
+this is only about attribution.
 
 Because replay is a layer, an entire `invoke` — the routing decision *and*
 everything the chosen procedure did — replays from one recording.

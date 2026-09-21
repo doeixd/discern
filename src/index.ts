@@ -929,15 +929,6 @@ export interface Policy<
   >;
 }
 
-/** @deprecated Renamed to {@link Policy}. */
-export type Program<
-  Input,
-  Output,
-  Error,
-  Requirements,
-  InputSchema extends Schema.Constraint = Schema.Constraint,
-> = Policy<Input, Output, Error, Requirements, InputSchema>;
-
 const makePolicy = <I, S extends Schema.Constraint, O, E, R, F>(
   self: Matcher<I, S, O, E, R, MatcherFlavor>,
   fallback: Handler<I, F>,

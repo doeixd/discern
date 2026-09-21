@@ -1,12 +1,17 @@
 {
   "name": "discern",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Uncertainty-aware semantic pattern matching, tracing and evaluation for Effect DecisionModel.",
   "license": "MIT",
   "author": "Patrick Glenn",
-  "repository": { "type": "git", "url": "git+https://github.com/doeixd/discern.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/doeixd/discern.git"
+  },
   "homepage": "https://github.com/doeixd/discern#readme",
-  "bugs": { "url": "https://github.com/doeixd/discern/issues" },
+  "bugs": {
+    "url": "https://github.com/doeixd/discern/issues"
+  },
   "keywords": [
     "effect",
     "effect-ts",
@@ -21,7 +26,10 @@
   ],
   "type": "module",
   "sideEffects": false,
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -33,19 +41,24 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test test/index.test.mjs test/procedure.test.mjs",
-    "test:types": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck test/types.ts",
+    "test:types": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck test/types.ts test/integration.types.ts",
     "check": "npm run typecheck && npm run test:types && npm test",
-    "example": "npm run build && node examples/walkthrough.mjs"
+    "example": "npm run build && node examples/walkthrough.mjs",
+    "prepublishOnly": "npm run check"
   },
   "devDependencies": {
+    "@effect/ai-typesafe": "^4.0.0-rc.117",
     "effect": "4.0.0-rc.117",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {
     "effect": ">=4.0.0-rc.116 <5"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

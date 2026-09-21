@@ -56,7 +56,7 @@ export type RequirementsOf<C> = C extends Procedure<any, any, any, any, infer R,
 
 /**
  * Define a procedure. `run` is ordinary Effect code; it is wrapped in a
- * {@link Model.scope} so that observations made inside it are attributed to this
+ * {@link Model.region} so that observations made inside it are attributed to this
  * procedure in a recording.
  */
 export const make = <const Id extends string, S extends Schema.Constraint, Out, Err, Req>(options: {
@@ -71,7 +71,7 @@ export const make = <const Id extends string, S extends Schema.Constraint, Out, 
   description: options.description,
   examples: options.examples ?? [],
   input: options.input,
-  run: (input) => Model.scope(options.id)(Effect.suspend(() => options.run(input))),
+  run: (input) => Model.region(options.id)(Effect.suspend(() => options.run(input))),
 });
 
 /** Wrap an existing Effect-returning function as a procedure. */
@@ -257,7 +257,7 @@ export const registry = <
   const route = (input_: S["Type"], routeOptions: RouteOptions = {}) => {
     const minProbability = routeOptions.minProbability ?? 0.7;
     const minMargin = routeOptions.minMargin ?? 0.15;
-    return Effect.map(Model.scope("route")(ask(decision, input_)), (answer): Route<IdOf<Members[number]>> => {
+    return Effect.map(Model.region("route")(ask(decision, input_)), (answer): Route<IdOf<Members[number]>> => {
       const ranked = ids
         .map((id) => ({ id, probability: answer.probabilities[id] ?? 0 }))
         .sort((a, b) => b.probability - a.probability);

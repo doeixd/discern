@@ -39,22 +39,25 @@ export const isReplayMiss = (error: unknown): error is AiError.AiError =>
 // -------------------------------------------------------------------------------------------------
 
 /**
- * The enclosing scope stack. It has a default, so it never appears in an
+ * The enclosing region stack. It has a default, so it never appears in an
  * Effect's requirements.
  */
-export const CurrentScope = Context.Reference<ReadonlyArray<string>>("discern/CurrentScope", {
+export const CurrentRegion = Context.Reference<ReadonlyArray<string>>("discern/CurrentRegion", {
   defaultValue: () => [],
 });
 
 /**
  * Name a region of a program so that observations recorded inside it are
- * attributed to it. Scopes nest, which is what turns a flat store into a tree.
+ * attributed to it. Regions nest, which is what turns a flat store into a tree.
+ *
+ * This is deliberately not called a scope: Effect's `Scope` is about resource
+ * lifetime, and this is only about attribution.
  */
-export const scope =
+export const region =
   (name: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-    Effect.flatMap(CurrentScope.useSync((path) => path), (parent) =>
-      Effect.provideService(effect, CurrentScope, [...parent, name]),
+    Effect.flatMap(CurrentRegion.useSync((path) => path), (parent) =>
+      Effect.provideService(effect, CurrentRegion, [...parent, name]),
     );
 
 /** One recorded semantic answer, with enough context to read it unaided. */
@@ -65,16 +68,16 @@ export interface Observation {
   readonly fingerprint: string;
   readonly kind: Decision.Any["_tag"];
   /**
-   * The scope stack this observation was recorded under.
+   * The region stack this observation was recorded under.
    *
    * An observation is content-addressed, so one entry covers every place the
-   * same decision was asked about the same input, and only one scope can be
+   * same decision was asked about the same input, and only one region can be
    * kept. `recording` sees every call and so moves the entry to the newest
-   * scope; `caching` writes only on a miss, so under `caching` alone the entry
-   * keeps the scope that first missed. For a faithful per-run tree, record each
-   * run into its own store.
+   * region; `caching` writes only on a miss, so under `caching` alone the entry
+   * keeps the region that first missed. For a faithful per-run tree, record
+   * each run into its own store.
    */
-  readonly scope: ReadonlyArray<string>;
+  readonly region: ReadonlyArray<string>;
   /** A validated `Decision.Answer`. */
   readonly answer: unknown;
 }
@@ -180,7 +183,7 @@ const record = (
   decisions: Record<string, Decision.Any>,
   addresses: Record<string, string>,
   answers: Answers,
-  scopePath: ReadonlyArray<string>,
+  regionPath: ReadonlyArray<string>,
 ): void => {
   for (const [id, decision] of Object.entries(decisions)) {
     const answer = answers[id];
@@ -189,7 +192,7 @@ const record = (
       decisionId: id,
       fingerprint: decisionFingerprint(decision),
       kind: decision._tag,
-      scope: scopePath,
+      region: regionPath,
       answer,
     });
   }
@@ -212,9 +215,9 @@ export const recording =
     fromDecide((definition, input) =>
       Effect.flatMap(encodeState(definition, input), (state) => {
         const { addresses } = split(definition, state, undefined);
-        return Effect.flatMap(CurrentScope.useSync((path) => path), (scopePath) =>
+        return Effect.flatMap(CurrentRegion.useSync((path) => path), (regionPath) =>
           Effect.map(inner.decide(definition as never, { input } as never), (response) => {
-            record(into, definition.decisions, addresses, response.answers as Answers, scopePath);
+            record(into, definition.decisions, addresses, response.answers as Answers, regionPath);
             return response;
           }),
         );
@@ -282,9 +285,9 @@ export const caching =
           return Effect.succeed({ answers: hits, usage: emptyUsage() });
         }
         const reduced = Decision.make({ input: definition.input, decisions: missing });
-        return Effect.flatMap(CurrentScope.useSync((path) => path), (scopePath) =>
+        return Effect.flatMap(CurrentRegion.useSync((path) => path), (regionPath) =>
           Effect.map(inner.decide(reduced as never, { input } as never), (response) => {
-            record(into, missing, addresses, response.answers as Answers, scopePath);
+            record(into, missing, addresses, response.answers as Answers, regionPath);
             return { answers: { ...hits, ...(response.answers as Answers) }, usage: response.usage };
           }),
         );
@@ -451,18 +454,18 @@ export const replayLayer = (source: Observations | ObservationStore): Layer.Laye
 // Reading a recording
 // -------------------------------------------------------------------------------------------------
 
-/** Observations grouped by the scopes they were recorded under. */
-export interface ScopeTree {
+/** Observations grouped by the regions they were recorded under. */
+export interface RegionTree {
   readonly name: string;
   readonly observations: ReadonlyArray<Observation>;
-  readonly children: ReadonlyArray<ScopeTree>;
+  readonly children: ReadonlyArray<RegionTree>;
 }
 
 /**
- * Arrange a recording as the tree of scopes it happened in. Observations made
- * outside any {@link scope} land at the root.
+ * Arrange a recording as the tree of regions it happened in. Observations made
+ * outside any {@link region} land at the root.
  */
-export const tree = (source: Observations, rootName = ""): ScopeTree => {
+export const tree = (source: Observations, rootName = ""): RegionTree => {
   const root: { name: string; observations: Array<Observation>; children: Map<string, any> } = {
     name: rootName,
     observations: [],
@@ -470,7 +473,7 @@ export const tree = (source: Observations, rootName = ""): ScopeTree => {
   };
   for (const observation of Object.values(source.entries)) {
     let node = root;
-    for (const name of observation.scope ?? []) {
+    for (const name of observation.region ?? []) {
       let child = node.children.get(name);
       if (child === undefined) {
         child = { name, observations: [], children: new Map() };
@@ -480,7 +483,7 @@ export const tree = (source: Observations, rootName = ""): ScopeTree => {
     }
     node.observations.push(observation);
   }
-  const freeze = (node: typeof root): ScopeTree => ({
+  const freeze = (node: typeof root): RegionTree => ({
     name: node.name,
     observations: node.observations,
     children: [...node.children.values()].map(freeze),
