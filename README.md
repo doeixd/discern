@@ -525,16 +525,16 @@ const model = TypeSafeDecisionModel.layer({ model: "jev-latest" }).pipe(
 )
 ```
 
-## Capabilities
+## Procedures
 
-`discern/capability` is a small layer above Discern: a **capability** is a
+`discern/procedure` is a small layer above Discern: a **procedure** is a
 named, typed Effect program, and a **registry** picks between several of them
 from a request.
 
 ```ts
-import * as Capability from "discern/capability"
+import * as Procedure from "discern/procedure"
 
-const find = Capability.make({
+const find = Procedure.make({
   id: "find",
   description: "Locate code relevant to a behavior, feature or concept",
   examples: ["Find where retries are implemented"],
@@ -542,7 +542,7 @@ const find = Capability.make({
   run: request => findProgram(request)
 })
 
-const code = Capability.registry(Request, [find, review, testGaps])
+const code = Procedure.registry(Request, [find, review, testGaps])
 ```
 
 When you know what you need, call it. No model is involved:
@@ -567,7 +567,7 @@ near-tie instead of resolving it:
 const route = yield* code.route(request)
 
 route._tag        // "Matched" | "Uncertain"
-route.ranked      // every capability with its probability, best first
+route.ranked      // every procedure with its probability, best first
 ```
 
 ```text
@@ -575,7 +575,7 @@ find          .31
 review        .34
 test-gaps     .35
               ---
-              Uncertain: no capability reached 0.7
+              Uncertain: no procedure reached 0.7
 ```
 
 That is the point. `find .31 / review .34 / test-gaps .35` is not a decision,
@@ -609,22 +609,22 @@ report.metrics.uncertain
 per example, so you can tune `minProbability` without paying per candidate.
 
 This matters more than it looks: a classification is a simplex, so **adding a
-capability renormalizes every probability in the registry**. Thresholds
+procedure renormalizes every probability in the registry**. Thresholds
 calibrated against an older membership do not carry over. Re-run the evaluation
 when the registry changes.
 
 ### What routing does not do
 
 `DecisionModel` answers are classifications, ratings and probabilities — there
-is no structured generation. A registry can therefore **select** a capability
+is no structured generation. A registry can therefore **select** a procedure
 but never **parameterize** one.
 
 So registries are homogeneous: every member accepts the registry's input type,
-and that is enforced in the types. Capabilities with different inputs compose
+and that is enforced in the types. Procedures with different inputs compose
 the ordinary way, as Effect code:
 
 ```ts
-const dependencyReview = Capability.make({
+const dependencyReview = Procedure.make({
   id: "dependency-review",
   description: "Assess the risk of upgrading a dependency",
   input: UpgradeRequest,
@@ -644,37 +644,37 @@ tool-calling agent: the model picks, your code constructs.
 
 A flat classification gets vague past roughly eight members: the criteria grow
 into a long prompt and the probabilities spread thin. A registry can be
-presented as a capability, so grouping is just membership:
+presented as a procedure, so grouping is just membership:
 
 ```ts
-const codeGroup = Capability.registry(Request, [find, review, testGaps])
+const codeGroup = Procedure.registry(Request, [find, review, testGaps])
 
-const code = Capability.fromRegistry({
+const code = Procedure.fromRegistry({
   id: "code",
   description: "Anything about reading or reviewing source code",
   registry: codeGroup
 })
 
-const top = Capability.registry(Request, [code, lint, deploy])
+const top = Procedure.registry(Request, [code, lint, deploy])
 ```
 
 Each level is a short, sharp question rather than one wide one.
 
-Because a capability can route, routing can recurse. `invoke` counts nesting
+Because a procedure can route, routing can recurse. `invoke` counts nesting
 depth and refuses past a ceiling:
 
 ```ts
-program.pipe(Capability.withMaxDepth(4))
+program.pipe(Procedure.withMaxDepth(4))
 ```
 
 The default is 8, and a program that reaches it fails with
-`DepthExceededError`. Only `invoke` is counted — a capability calling another
-capability's `run` directly is bounded by the code that does it.
+`DepthExceededError`. Only `invoke` is counted — a procedure calling another
+procedure's `run` directly is bounded by the code that does it.
 
 ### Execution trees
 
-`Capability.make` wraps `run` in a named scope, so a recording knows which
-capability made each observation:
+`Procedure.make` wraps `run` in a named scope, so a recording knows which
+procedure made each observation:
 
 ```ts
 const observations = Discern.Model.store()
@@ -686,7 +686,7 @@ Discern.Model.tree(observations.snapshot())
 ```text
 invoke
 ├─ route            the registry classification
-└─ audit            the capability that was chosen
+└─ audit            the procedure that was chosen
    └─ risk          a decision it made internally
 ```
 
@@ -696,10 +696,10 @@ most recently. Record each run into its own store when you want a faithful
 per-run tree.
 
 `Discern.Model.scope("name")` is the underlying primitive and works on any
-Effect, so you can nest by your own concepts rather than only by capability.
+Effect, so you can nest by your own concepts rather than only by procedure.
 
 Because replay is a layer, an entire `invoke` — the routing decision *and*
-everything the chosen capability did — replays from one recording.
+everything the chosen procedure did — replays from one recording.
 
 ## Mental model
 
@@ -712,8 +712,8 @@ Interceptor    recording, replay, caching, budgets
 Decision       what observation should be made
 Pattern        how the evidence should be interpreted
 Policy         which ordered branch runs
-Capability     a named program the system knows how to do
-Registry       which capability a request belongs to
+Procedure      a named, described, typed entry point
+Registry       which procedure a request belongs to
 ```
 
 Or, more compactly:
@@ -723,7 +723,7 @@ Effect Match = control flow over facts
 Discern      = control flow over uncertain semantic observations
 ```
 
-That makes Discern a useful base for higher-level Effect capabilities / Stanley-style workflows without making Discern itself a workflow framework.
+That makes Discern a useful base for higher-level Effect procedures / Stanley-style workflows without making Discern itself a workflow framework.
 
 ## License
 

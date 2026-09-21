@@ -9,7 +9,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Discern from "../dist/index.js";
-import * as Capability from "../dist/capability.js";
+import * as Procedure from "../dist/procedure.js";
 
 const { Model } = Discern;
 
@@ -120,22 +120,22 @@ const program = Effect.gen(function* () {
   console.log("  reruns the same decision without a model. The budget is the same");
   console.log("  kind of layer, and refuses rather than overspending.");
 
-  // --- 3. routing between capabilities ---------------------------------------
+  // --- 3. routing between procedures ---------------------------------------
 
   heading("3. Routing reports what it cannot decide");
-  const reviewCap = Capability.make({
+  const reviewProc = Procedure.make({
     id: "review",
     description: "Review a change for correctness and semantic risk",
     input: Change,
     run: (change) => Effect.map(review(change), (verdict) => `review says: ${verdict}`),
   });
-  const shipCap = Capability.make({
+  const shipProc = Procedure.make({
     id: "ship",
     description: "Release a change that has already been reviewed",
     input: Change,
     run: (change) => Effect.succeed(`shipping: ${change}`),
   });
-  const registry = Capability.registry(Change, [reviewCap, shipCap], { id: "route" });
+  const registry = Procedure.registry(Change, [reviewProc, shipProc], { id: "route" });
 
   const routed = yield* registry.invoke("drop a deprecated field");
   console.log(`  clear request      -> ${routed}`);
@@ -144,7 +144,7 @@ const program = Effect.gen(function* () {
   console.log(`  unclear request    -> ${muddled._tag}: ${muddled.reason}`);
   console.log(`  ranked             -> ${muddled.ranked.map((c) => `${c.id} ${c.probability.toFixed(2)}`).join(", ")}`);
   console.log("\n  `invoke` would fail with RoutingUncertainError here rather than");
-  console.log("  running whichever capability happened to win by a hair.");
+  console.log("  running whichever procedure happened to win by a hair.");
 });
 
 await Effect.runPromise(Effect.provide(program, Model.layer(stubModel)));

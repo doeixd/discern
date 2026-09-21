@@ -3,7 +3,7 @@ import test from "node:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Discern from "../dist/index.js";
-import * as Capability from "../dist/capability.js";
+import * as Procedure from "../dist/procedure.js";
 
 const { Model } = Discern;
 
@@ -36,7 +36,7 @@ const routesTo = (probabilities) => (options) => {
 
 const Request = Schema.String;
 
-const find = Capability.make({
+const find = Procedure.make({
   id: "find",
   description: "Locate code relevant to a behavior, feature or concept",
   examples: ["Find where retries are implemented"],
@@ -44,33 +44,33 @@ const find = Capability.make({
   run: (request) => Effect.succeed(`found:${request}`),
 });
 
-const review = Capability.make({
+const review = Procedure.make({
   id: "review",
   description: "Review a change for correctness and semantic risk",
   input: Request,
   run: (request) => Effect.succeed(`reviewed:${request}`),
 });
 
-const testGaps = Capability.make({
+const testGaps = Procedure.make({
   id: "test-gaps",
   description: "Find behavior that lacks sufficient test coverage",
   input: Request,
   run: (request) => Effect.succeed(`gaps:${request}`),
 });
 
-test("a capability runs directly, with no model involved", async () => {
+test("a procedure runs directly, with no model involved", async () => {
   assert.equal(await Effect.runPromise(find.run("retries")), "found:retries");
 });
 
-test("a registry routes a confident request to one capability", async () => {
-  const code = Capability.registry(Request, [find, review, testGaps]);
+test("a registry routes a confident request to one procedure", async () => {
+  const code = Procedure.registry(Request, [find, review, testGaps]);
 
   const result = await run(code.invoke("check my tests"), routesTo({ find: 0.05, review: 0.1, "test-gaps": 0.85 }));
   assert.equal(result, "gaps:check my tests");
 });
 
 test("routing exposes the whole distribution, not just the winner", async () => {
-  const code = Capability.registry(Request, [find, review, testGaps]);
+  const code = Procedure.registry(Request, [find, review, testGaps]);
 
   const route = await run(code.route("where is auth"), routesTo({ find: 0.8, review: 0.15, "test-gaps": 0.05 }));
   assert.equal(route._tag, "Matched");
@@ -84,15 +84,15 @@ test("routing exposes the whole distribution, not just the winner", async () => 
 });
 
 test("a near-tie is Uncertain rather than a coin flip", async () => {
-  const code = Capability.registry(Request, [find, review, testGaps]);
+  const code = Procedure.registry(Request, [find, review, testGaps]);
   const muddled = routesTo({ find: 0.31, review: 0.34, "test-gaps": 0.35 });
 
   const route = await run(code.route("do something"), muddled);
   assert.equal(route._tag, "Uncertain");
-  assert.match(route.reason, /no capability reached 0\.7/);
+  assert.match(route.reason, /no procedure reached 0\.7/);
 
   // Uncertainty is reported about the distribution, not about whichever
-  // capability happens to be listed first.
+  // procedure happens to be listed first.
   assert.deepEqual(
     route.ranked.map((candidate) => candidate.id),
     ["test-gaps", "review", "find"],
@@ -100,7 +100,7 @@ test("a near-tie is Uncertain rather than a coin flip", async () => {
 });
 
 test("a clear leader with too small a margin is still Uncertain", async () => {
-  const code = Capability.registry(Request, [find, review, testGaps]);
+  const code = Procedure.registry(Request, [find, review, testGaps]);
   const close = routesTo({ find: 0.44, review: 0.46, "test-gaps": 0.1 });
 
   const route = await run(code.route("ambiguous", { minProbability: 0.4, minMargin: 0.15 }), close);
@@ -109,7 +109,7 @@ test("a clear leader with too small a margin is still Uncertain", async () => {
 });
 
 test("an unroutable request fails rather than guessing, unless handled", async () => {
-  const code = Capability.registry(Request, [find, review, testGaps]);
+  const code = Procedure.registry(Request, [find, review, testGaps]);
   const muddled = routesTo({ find: 0.33, review: 0.34, "test-gaps": 0.33 });
 
   await assert.rejects(
@@ -125,7 +125,7 @@ test("an unroutable request fails rather than guessing, unless handled", async (
 });
 
 test("thresholds are tunable per call", async () => {
-  const code = Capability.registry(Request, [find, review, testGaps]);
+  const code = Procedure.registry(Request, [find, review, testGaps]);
   const leaning = routesTo({ find: 0.55, review: 0.3, "test-gaps": 0.15 });
 
   assert.equal((await run(code.route("x"), leaning))._tag, "Uncertain");
@@ -136,7 +136,7 @@ test("thresholds are tunable per call", async () => {
 });
 
 test("the routing decision is an ordinary pattern, so Eval can measure it", async () => {
-  const code = Capability.registry(Request, [find, review, testGaps]);
+  const code = Procedure.registry(Request, [find, review, testGaps]);
 
   // "Is this request for `find`?" evaluated over labeled examples.
   const isFind = code.decision.is("find", { match: 0.7, margin: 0.15 });
@@ -160,24 +160,24 @@ test("the routing decision is an ordinary pattern, so Eval can measure it", asyn
 });
 
 test("a registry rejects duplicate ids and single-member registries", () => {
-  assert.throws(() => Capability.registry(Request, [find]), /at least two capabilities/);
-  assert.throws(() => Capability.registry(Request, [find, find]), /Duplicate capability id "find"/);
+  assert.throws(() => Procedure.registry(Request, [find]), /at least two procedures/);
+  assert.throws(() => Procedure.registry(Request, [find, find]), /Duplicate procedure id "find"/);
 });
 
-test("observations are attributed to the capability that made them", async () => {
+test("observations are attributed to the procedure that made them", async () => {
   const risky = Discern.on(Request).probability({ id: "risk", instructions: "Risky" });
   const riskPolicy = Discern.type(Request).pipe(
     Discern.when(risky.above(0.8), () => "risky"),
     Discern.orElse(() => "safe"),
   );
 
-  const auditor = Capability.make({
+  const auditor = Procedure.make({
     id: "audit",
     description: "Audit a change for risk",
     input: Request,
     run: (request) => Effect.map(riskPolicy(request), (verdict) => `${verdict}:${request}`),
   });
-  const code = Capability.registry(Request, [auditor, find]);
+  const code = Procedure.registry(Request, [auditor, find]);
 
   const observations = Model.store();
   const result = await run(
@@ -191,7 +191,7 @@ test("observations are attributed to the capability that made them", async () =>
   assert.equal(result, "risky:deploy on friday");
 
   const tree = Model.tree(observations.snapshot(), "invoke");
-  // Routing is its own scope; the risk decision belongs to the capability that made it.
+  // Routing is its own scope; the risk decision belongs to the procedure that made it.
   assert.deepEqual(tree.observations, []);
   assert.deepEqual(
     tree.children.map((child) => [child.name, child.observations.map((o) => o.decisionId)]),
@@ -202,20 +202,20 @@ test("observations are attributed to the capability that made them", async () =>
   );
 });
 
-test("a whole capability invocation replays from one recording", async () => {
+test("a whole procedure invocation replays from one recording", async () => {
   let calls = 0;
   const urgent = Discern.on(Request).probability({ id: "urgent", instructions: "Urgent" });
   const urgency = Discern.type(Request).pipe(
     Discern.when(urgent.above(0.8), () => "now"),
     Discern.orElse(() => "later"),
   );
-  const triage = Capability.make({
+  const triage = Procedure.make({
     id: "triage",
     description: "Decide how soon a request needs attention",
     input: Request,
     run: (request) => Effect.map(urgency(request), (when) => `${when}:${request}`),
   });
-  const code = Capability.registry(Request, [triage, find]);
+  const code = Procedure.registry(Request, [triage, find]);
 
   const model = (options) => {
     calls += 1;
@@ -229,31 +229,31 @@ test("a whole capability invocation replays from one recording", async () => {
     await run(code.invoke("prod is down"), model, [Model.recording(observations)]),
     "now:prod is down",
   );
-  assert.equal(calls, 2, "one call to route, one inside the capability");
+  assert.equal(calls, 2, "one call to route, one inside the procedure");
 
   const replayed = await Effect.runPromise(
     Effect.provide(code.invoke("prod is down"), Model.replayLayer(observations.snapshot())),
   );
   assert.equal(replayed, "now:prod is down");
-  assert.equal(calls, 2, "routing and the capability body both replayed");
+  assert.equal(calls, 2, "routing and the procedure body both replayed");
 });
 
 test("get rejects an id the registry does not have", () => {
-  const code = Capability.registry(Request, [find, review]);
+  const code = Procedure.registry(Request, [find, review]);
   assert.equal(code.get("find"), find);
-  assert.throws(() => code.get("nope"), /No capability "nope" in this registry \(have: find, review\)/);
+  assert.throws(() => code.get("nope"), /No procedure "nope" in this registry \(have: find, review\)/);
 });
 
 test("an id that collides with Object.prototype still routes", async () => {
   // Assigning `__proto__` on a plain object literal sets no own property, so a
-  // capability named this way would vanish from the routing criteria.
-  const odd = Capability.make({
+  // procedure named this way would vanish from the routing criteria.
+  const odd = Procedure.make({
     id: "__proto__",
-    description: "A capability with an awkward name",
+    description: "A procedure with an awkward name",
     input: Request,
     run: () => Effect.succeed("odd"),
   });
-  const code = Capability.registry(Request, [odd, find]);
+  const code = Procedure.registry(Request, [odd, find]);
 
   assert.deepEqual(Object.keys(code.decision.decision.criteria), ["__proto__", "find"]);
 
@@ -268,21 +268,21 @@ test("an id that collides with Object.prototype still routes", async () => {
 });
 
 test("registries nest, so each routing decision stays a short question", async () => {
-  const lint = Capability.make({
+  const lint = Procedure.make({
     id: "lint",
     description: "Check style and formatting",
     input: Request,
     run: () => Effect.succeed("linted"),
   });
 
-  // A group of code capabilities, presented to the parent as one entry.
-  const codeGroup = Capability.registry(Request, [find, review], { id: "code-route" });
-  const code = Capability.fromRegistry({
+  // A group of code procedures, presented to the parent as one entry.
+  const codeGroup = Procedure.registry(Request, [find, review], { id: "code-route" });
+  const code = Procedure.fromRegistry({
     id: "code",
     description: "Anything about reading or reviewing source code",
     registry: codeGroup,
   });
-  const top = Capability.registry(Request, [code, lint], { id: "top-route" });
+  const top = Procedure.registry(Request, [code, lint], { id: "top-route" });
 
   const calls = [];
   const model = (options) => {
@@ -313,13 +313,13 @@ test("registries nest, so each routing decision stays a short question", async (
 
 test("nested invocation is bounded by a depth limit", async () => {
   let registry;
-  const loop = Capability.make({
+  const loop = Procedure.make({
     id: "loop",
     description: "Routes straight back to the registry it belongs to",
     input: Request,
     run: (request) => registry.invoke(request),
   });
-  registry = Capability.registry(Request, [loop, find]);
+  registry = Procedure.registry(Request, [loop, find]);
 
   let calls = 0;
   const model = (options) => {
@@ -328,7 +328,7 @@ test("nested invocation is bounded by a depth limit", async () => {
   };
 
   await assert.rejects(
-    () => run(Capability.withMaxDepth(3)(registry.invoke("x")), model),
+    () => run(Procedure.withMaxDepth(3)(registry.invoke("x")), model),
     (error) => {
       const cause = error?.cause ?? error;
       return cause?._tag === "DepthExceededError" && cause.limit === 3;
@@ -339,9 +339,9 @@ test("nested invocation is bounded by a depth limit", async () => {
 
 test("depth is per-branch, not a running total", async () => {
   // Two sibling invocations each start from the caller's depth.
-  const codeGroup = Capability.registry(Request, [find, review], { id: "inner" });
+  const codeGroup = Procedure.registry(Request, [find, review], { id: "inner" });
   const model = routesTo({ find: 0.9, review: 0.1 });
 
   const both = Effect.all([codeGroup.invoke("a"), codeGroup.invoke("b")]);
-  assert.deepEqual(await run(Capability.withMaxDepth(1)(both), model), ["found:a", "found:b"]);
+  assert.deepEqual(await run(Procedure.withMaxDepth(1)(both), model), ["found:a", "found:b"]);
 });

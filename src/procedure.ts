@@ -1,17 +1,17 @@
 /**
- * Capabilities: named, typed, semantically routable Effect programs.
+ * Procedures: named, typed, semantically routable Effect programs.
  *
- * Discern proper is about control flow *within* a program. A capability is a
- * program the system knows how to do, and a registry chooses between several of
- * them from a request. Routing is one classification decision, so it inherits
+ * Discern proper is about control flow *within* a program. A procedure is a
+ * named entry point with a described purpose and a typed input, and a registry
+ * chooses between several of them from a request. Routing is one classification decision, so it inherits
  * Discern's treatment of uncertainty: a registry that cannot tell two
- * capabilities apart says so instead of picking the winner by a hair.
+ * procedures apart says so instead of picking the winner by a hair.
  *
  * What routing deliberately does not do is *parameterize*. `DecisionModel`
  * answers are classifications, ratings and probabilities — there is no
- * structured generation — so a registry can select a capability but never
+ * structured generation — so a registry can select a procedure but never
  * construct its input. Registries are therefore homogeneous: every member
- * accepts the registry's input type. Capabilities with different inputs compose
+ * accepts the registry's input type. Procedures with different inputs compose
  * statically, through ordinary Effect code.
  */
 import * as Context from "effect/Context";
@@ -23,13 +23,13 @@ import { ask, on } from "./index.js";
 import type { ClassifyDecision } from "./index.js";
 import * as Model from "./model.js";
 
-const CapabilityTypeId: unique symbol = Symbol.for("discern/Capability");
+const ProcedureTypeId: unique symbol = Symbol.for("discern/Procedure");
 
 // -------------------------------------------------------------------------------------------------
-// Capabilities
+// Procedures
 // -------------------------------------------------------------------------------------------------
 
-export interface Capability<
+export interface Procedure<
   Id extends string,
   Input,
   Output,
@@ -37,9 +37,9 @@ export interface Capability<
   Requirements,
   InputSchema extends Schema.Constraint,
 > {
-  readonly [CapabilityTypeId]: typeof CapabilityTypeId;
+  readonly [ProcedureTypeId]: typeof ProcedureTypeId;
   readonly id: Id;
-  /** What this capability does. This is the text a registry routes on. */
+  /** What this procedure does. This is the text a registry routes on. */
   readonly description: string;
   /** Representative requests, included in the routing criteria when present. */
   readonly examples: ReadonlyArray<string>;
@@ -47,17 +47,17 @@ export interface Capability<
   readonly run: (input: Input) => Effect.Effect<Output, Error, Requirements>;
 }
 
-export type Any = Capability<string, any, any, any, any, Schema.Constraint>;
+export type Any = Procedure<string, any, any, any, any, Schema.Constraint>;
 
-export type IdOf<C> = C extends Capability<infer Id, any, any, any, any, any> ? Id : never;
-export type OutputOf<C> = C extends Capability<any, any, infer O, any, any, any> ? O : never;
-export type ErrorOf<C> = C extends Capability<any, any, any, infer E, any, any> ? E : never;
-export type RequirementsOf<C> = C extends Capability<any, any, any, any, infer R, any> ? R : never;
+export type IdOf<C> = C extends Procedure<infer Id, any, any, any, any, any> ? Id : never;
+export type OutputOf<C> = C extends Procedure<any, any, infer O, any, any, any> ? O : never;
+export type ErrorOf<C> = C extends Procedure<any, any, any, infer E, any, any> ? E : never;
+export type RequirementsOf<C> = C extends Procedure<any, any, any, any, infer R, any> ? R : never;
 
 /**
- * Define a capability. `run` is ordinary Effect code; it is wrapped in a
+ * Define a procedure. `run` is ordinary Effect code; it is wrapped in a
  * {@link Model.scope} so that observations made inside it are attributed to this
- * capability in a recording.
+ * procedure in a recording.
  */
 export const make = <const Id extends string, S extends Schema.Constraint, Out, Err, Req>(options: {
   readonly id: Id;
@@ -65,8 +65,8 @@ export const make = <const Id extends string, S extends Schema.Constraint, Out, 
   readonly examples?: ReadonlyArray<string>;
   readonly input: S;
   readonly run: (input: S["Type"]) => Effect.Effect<Out, Err, Req>;
-}): Capability<Id, S["Type"], Out, Err, Req, S> => ({
-  [CapabilityTypeId]: CapabilityTypeId,
+}): Procedure<Id, S["Type"], Out, Err, Req, S> => ({
+  [ProcedureTypeId]: ProcedureTypeId,
   id: options.id,
   description: options.description,
   examples: options.examples ?? [],
@@ -74,13 +74,13 @@ export const make = <const Id extends string, S extends Schema.Constraint, Out, 
   run: (input) => Model.scope(options.id)(Effect.suspend(() => options.run(input))),
 });
 
-/** Wrap an existing Effect-returning function as a capability. */
+/** Wrap an existing Effect-returning function as a procedure. */
 export const fromEffect = <const Id extends string, S extends Schema.Constraint, Out, Err, Req>(
   id: Id,
   description: string,
   input: S,
   run: (input: S["Type"]) => Effect.Effect<Out, Err, Req>,
-): Capability<Id, S["Type"], Out, Err, Req, S> => make({ id, description, input, run });
+): Procedure<Id, S["Type"], Out, Err, Req, S> => make({ id, description, input, run });
 
 // -------------------------------------------------------------------------------------------------
 // Routing
@@ -96,7 +96,7 @@ export type Route<Ids extends string> =
       readonly _tag: "Matched";
       readonly id: Ids;
       readonly probability: number;
-      /** How far ahead of the runner-up this capability was. */
+      /** How far ahead of the runner-up this procedure was. */
       readonly margin: number;
       readonly ranked: ReadonlyArray<RouteCandidate<Ids>>;
     }
@@ -118,12 +118,12 @@ export interface RouteOptions {
  * calls are bounded by the code that makes them; only routing can recurse
  * without a fixed bottom, so only routing is counted.
  */
-export const CurrentDepth = Context.Reference<number>("discern/CapabilityDepth", {
+export const CurrentDepth = Context.Reference<number>("discern/ProcedureDepth", {
   defaultValue: () => 0,
 });
 
 /** The ceiling `invoke` enforces. Defaults to 8. */
-export const MaxDepth = Context.Reference<number>("discern/CapabilityMaxDepth", {
+export const MaxDepth = Context.Reference<number>("discern/ProcedureMaxDepth", {
   defaultValue: () => 8,
 });
 
@@ -140,7 +140,7 @@ export class DepthExceededError extends Error {
     readonly depth: number,
     readonly limit: number,
   ) {
-    super(`Capability routing reached depth ${depth}, at the limit of ${limit}`);
+    super(`Procedure routing reached depth ${depth}, at the limit of ${limit}`);
   }
 }
 
@@ -178,7 +178,7 @@ export interface Registry<Members extends ReadonlyArray<Any>, S extends Schema.C
   /** The classification this registry routes with, exposed for inspection and evaluation. */
   readonly decision: ClassifyDecision<S["Type"], IdOf<Members[number]>, S>;
   /**
-   * Choose a capability from the whole distribution, not just the provider's
+   * Choose a procedure from the whole distribution, not just the provider's
    * chosen label. Returns `Uncertain` rather than picking a near-tie.
    */
   readonly route: (
@@ -189,7 +189,7 @@ export interface Registry<Members extends ReadonlyArray<Any>, S extends Schema.C
     AiError.AiError,
     DecisionModel.DecisionModel | S["EncodingServices"]
   >;
-  /** Route, then run the chosen capability. */
+  /** Route, then run the chosen procedure. */
   readonly invoke: <Fallback = never>(
     input: S["Type"],
     options?: InvokeOptions<S["Type"], IdOf<Members[number]>, Fallback>,
@@ -216,7 +216,7 @@ const criterion = (member: Any): string =>
     : `${member.description}. For example: ${member.examples.join("; ")}`;
 
 /**
- * Group capabilities that share an input type so a request can be routed
+ * Group procedures that share an input type so a request can be routed
  * between them.
  *
  * Adding or removing a member changes the classification, and therefore
@@ -226,18 +226,18 @@ const criterion = (member: Any): string =>
  */
 export const registry = <
   S extends Schema.Constraint,
-  const Members extends ReadonlyArray<Capability<string, S["Type"], any, any, any, S>>,
+  const Members extends ReadonlyArray<Procedure<string, S["Type"], any, any, any, S>>,
 >(
   input: S,
   members: Members,
   options: { readonly id?: string; readonly instructions?: string } = {},
 ): Registry<Members, S> => {
   if (members.length < 2) {
-    throw new Error("Capability.registry needs at least two capabilities to route between");
+    throw new Error("Procedure.registry needs at least two procedures to route between");
   }
   const seen = new Set<string>();
   for (const member of members) {
-    if (seen.has(member.id)) throw new Error(`Duplicate capability id "${member.id}" in registry`);
+    if (seen.has(member.id)) throw new Error(`Duplicate procedure id "${member.id}" in registry`);
     seen.add(member.id);
   }
 
@@ -247,7 +247,7 @@ export const registry = <
   const decision = on(input).classify({
     ...(options.id === undefined ? undefined : { id: options.id }),
     instructions:
-      options.instructions ?? "Choose the capability that best handles this request",
+      options.instructions ?? "Choose the procedure that best handles this request",
     criteria,
   }) as unknown as ClassifyDecision<S["Type"], IdOf<Members[number]>, S>;
 
@@ -268,7 +268,7 @@ export const registry = <
       }
       const reason =
         top.probability < minProbability
-          ? `no capability reached ${minProbability} (best was ${top.id} at ${top.probability.toFixed(3)})`
+          ? `no procedure reached ${minProbability} (best was ${top.id} at ${top.probability.toFixed(3)})`
           : `${top.id} led ${ranked[1]!.id} by only ${margin.toFixed(3)}, under ${minMargin}`;
       return { _tag: "Uncertain", reason, ranked };
     });
@@ -302,7 +302,7 @@ export const registry = <
     get: ((id: string) => {
       const member = byId.get(id);
       if (member === undefined) {
-        throw new Error(`No capability "${id}" in this registry (have: ${ids.join(", ")})`);
+        throw new Error(`No procedure "${id}" in this registry (have: ${ids.join(", ")})`);
       }
       return member;
     }) as Registry<Members, S>["get"],
@@ -313,25 +313,25 @@ export const registry = <
 };
 
 /**
- * Present a registry as a capability, so registries nest.
+ * Present a registry as a procedure, so registries nest.
  *
  * A flat classification gets vague past roughly eight members: the criteria
  * grow into a long prompt and the probabilities spread thin. Grouping related
- * capabilities behind one entry keeps each routing decision a short, sharp
- * question, and nothing new is needed to do it — a registry-as-capability is
+ * procedures behind one entry keeps each routing decision a short, sharp
+ * question, and nothing new is needed to do it — a registry-as-procedure is
  * just another member of its parent.
  */
 export const fromRegistry = <
   const Id extends string,
   S extends Schema.Constraint,
-  const Members extends ReadonlyArray<Capability<string, S["Type"], any, any, any, S>>,
+  const Members extends ReadonlyArray<Procedure<string, S["Type"], any, any, any, S>>,
 >(options: {
   readonly id: Id;
   readonly description: string;
   readonly examples?: ReadonlyArray<string>;
   readonly registry: Registry<Members, S>;
   readonly routing?: RouteOptions;
-}): Capability<
+}): Procedure<
   Id,
   S["Type"],
   OutputOf<Members[number]>,

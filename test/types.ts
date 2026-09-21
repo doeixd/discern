@@ -83,20 +83,20 @@ void matcher.replay("change", observations);
 const asPolicy: Discern.Policy<string, string | number | boolean, never, never, typeof Schema.String> = matcher;
 void asPolicy;
 
-// --- Capabilities -------------------------------------------------------------
+// --- Procedures -------------------------------------------------------------
 
-import * as Capability from "../src/capability.js";
+import * as Procedure from "../src/procedure.js";
 
 const Request = Schema.String;
 
-const findCap = Capability.make({
+const findCap = Procedure.make({
   id: "find",
   description: "Locate relevant code",
   input: Request,
   run: (request: string) => Effect.succeed(request.length),
 });
 
-const reviewCap = Capability.make({
+const reviewCap = Procedure.make({
   id: "review",
   description: "Review a change",
   input: Request,
@@ -104,10 +104,10 @@ const reviewCap = Capability.make({
 });
 
 // Ids stay literal, so `get` is checked against actual membership.
-const code = Capability.registry(Request, [findCap, reviewCap]);
+const code = Procedure.registry(Request, [findCap, reviewCap]);
 const foundCap: typeof findCap = code.get("find");
 void foundCap;
-// @ts-expect-error there is no such capability in this registry
+// @ts-expect-error there is no such procedure in this registry
 code.get("test-gaps");
 
 // invoke unions the member outputs.
@@ -125,15 +125,15 @@ void code.route("x").pipe(
   Effect.map((route) => (route._tag === "Matched" ? route.id : route.ranked[0]!.id)),
 );
 
-// Registries are homogeneous in input: a capability over a different schema is rejected.
-const numeric = Capability.make({
+// Registries are homogeneous in input: a procedure over a different schema is rejected.
+const numeric = Procedure.make({
   id: "numeric",
   description: "Takes a number",
   input: Schema.Number,
   run: (value: number) => Effect.succeed(value),
 });
 // @ts-expect-error `numeric` does not accept the registry's input type
-Capability.registry(Request, [findCap, numeric]);
+Procedure.registry(Request, [findCap, numeric]);
 
 // A Budget carries a private brand, so only `Discern.Model.budget` can make one.
 // @ts-expect-error a hand-rolled budget would fail at runtime on a private hook
