@@ -134,3 +134,12 @@ const numeric = Capability.make({
 });
 // @ts-expect-error `numeric` does not accept the registry's input type
 Capability.registry(Request, [findCap, numeric]);
+
+// A Budget carries a private brand, so only `Discern.Model.budget` can make one.
+// @ts-expect-error a hand-rolled budget would fail at runtime on a private hook
+const handRolled: Discern.Model.Budget = {
+  limits: { decisions: 1 },
+  spent: () => ({ decisions: 0, calls: 0 }),
+  reset: () => {},
+};
+void handRolled;

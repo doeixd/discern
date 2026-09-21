@@ -65,12 +65,14 @@ export interface Observation {
   readonly fingerprint: string;
   readonly kind: Decision.Any["_tag"];
   /**
-   * The scope stack this observation was most recently made under.
+   * The scope stack this observation was recorded under.
    *
    * An observation is content-addressed, so one entry covers every place the
-   * same decision was asked about the same input. Re-recording moves it to the
-   * newest scope. For a faithful per-run tree, record each run into its own
-   * store.
+   * same decision was asked about the same input, and only one scope can be
+   * kept. `recording` sees every call and so moves the entry to the newest
+   * scope; `caching` writes only on a miss, so under `caching` alone the entry
+   * keeps the scope that first missed. For a faithful per-run tree, record each
+   * run into its own store.
    */
   readonly scope: ReadonlyArray<string>;
   /** A validated `Decision.Answer`. */
@@ -97,14 +99,27 @@ export interface MemoryStore extends ObservationStore {
   readonly clear: () => void;
 }
 
+const checkVersion = (observations: Observations): Observations => {
+  if (observations.version !== 2) {
+    throw new Error(
+      `Unsupported observation format v${observations.version}; addresses are not comparable across versions`,
+    );
+  }
+  return observations;
+};
+
 export const store = (initial?: Observations): MemoryStore => {
-  const values = new Map<string, Observation>(initial ? Object.entries(initial.entries) : undefined);
+  const values = new Map<string, Observation>(
+    initial ? Object.entries(checkVersion(initial).entries) : undefined,
+  );
   return {
     get: (address) => values.get(address),
     set: (address, observation) => void values.set(address, observation),
     snapshot: () => ({ version: 2, entries: Object.fromEntries(values) }),
+    /** Replaces the contents, so a snapshot round-trips exactly. Use `set` to merge. */
     load: (observations) => {
-      for (const [address, observation] of Object.entries(observations.entries)) {
+      values.clear();
+      for (const [address, observation] of Object.entries(checkVersion(observations).entries)) {
         values.set(address, observation);
       }
     },
@@ -147,9 +162,9 @@ interface Split {
 }
 
 const split = (definition: AnyDefinition, state: unknown, lookup: ObservationStore | undefined): Split => {
-  const hits: Answers = {};
-  const missing: Record<string, Decision.Any> = {};
-  const addresses: Record<string, string> = {};
+  const hits: Answers = Object.create(null);
+  const missing: Record<string, Decision.Any> = Object.create(null);
+  const addresses: Record<string, string> = Object.create(null);
   for (const [id, decision] of Object.entries(definition.decisions)) {
     const address = observationAddress(decision, state);
     addresses[id] = address;
@@ -212,6 +227,12 @@ export const recording =
  * Because the address covers the decision definition *and* the input, a changed
  * decision simply has no recorded answer — there is no separate fingerprint
  * check to keep in sync.
+ */
+/**
+ * `onMissing: "ask"` passes unrecorded decisions through to the model but does
+ * not write them back — `replaying` only reads. To top up a recording as you
+ * go, put a cache underneath it:
+ * `[replaying(fixture, { onMissing: "ask" }), caching(store)]`.
  */
 export const replaying = (
   source: Observations | ObservationStore,
@@ -282,22 +303,30 @@ export interface BudgetSpend {
   readonly calls: number;
 }
 
+const BudgetTypeId: unique symbol = Symbol.for("discern/Budget");
+
+/**
+ * A spend counter. Only {@link budget} can make one: the counter it increments
+ * is private, so a structurally similar object would typecheck and then fail at
+ * runtime.
+ */
 export interface Budget {
+  readonly [BudgetTypeId]: typeof BudgetTypeId;
   readonly limits: BudgetLimits;
   readonly spent: () => BudgetSpend;
   readonly reset: () => void;
 }
 
-/** The spend hook is deliberately absent from the public `Budget` type. */
 interface ChargeableBudget extends Budget {
   readonly charge: (decisions: number) => void;
 }
 
-/** A spend counter. Create one per run, then pass it to {@link budgeted}. */
+/** Create a spend counter, one per run, then pass it to {@link budgeted}. */
 export const budget = (limits: BudgetLimits): Budget => {
   let decisions = 0;
   let calls = 0;
   const self: ChargeableBudget = {
+    [BudgetTypeId]: BudgetTypeId,
     limits,
     spent: () => ({ decisions, calls }),
     reset: () => {

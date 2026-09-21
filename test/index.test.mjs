@@ -596,3 +596,71 @@ test("Eval.sweep skips decisions that deterministic structure already settles", 
     ],
   );
 });
+
+test("replaying can fall through to the model for anything it lacks", async () => {
+  const asked = [];
+  const model = (options) => {
+    asked.push(Object.keys(options.decisions).sort());
+    return answersFor(options, () => probabilityAnswer(0.9));
+  };
+
+  const OnChange = Discern.on(Schema.String);
+  const a = OnChange.probability({ id: "a", instructions: "First" });
+  const b = OnChange.probability({ id: "b", instructions: "Second" });
+
+  const onlyA = Discern.type(Schema.String).pipe(
+    Discern.when(a.above(0.8), () => "a"),
+    Discern.orElse(() => "none"),
+  );
+  const both = Discern.type(Schema.String).pipe(
+    Discern.when(Discern.and(a.above(0.8), b.above(0.8)), () => "both"),
+    Discern.orElse(() => "none"),
+  );
+
+  const store = Model.store();
+  await run(onlyA("x"), model, [Model.recording(store)]);
+  assert.deepEqual(asked, [["a"]]);
+
+  // Strict replay refuses, because `b` was never recorded.
+  await assert.rejects(
+    () => Effect.runPromise(both.replay("x", store.snapshot())),
+    (error) => Model.isReplayMiss(error),
+  );
+
+  // `onMissing: "ask"` replays what it has and asks for the rest.
+  const result = await run(both("x"), model, [Model.replaying(store, { onMissing: "ask" })]);
+  assert.equal(result, "both");
+  assert.deepEqual(asked, [["a"], ["b"]], "only the unrecorded decision reached the model");
+});
+
+test("load replaces the store, so a snapshot round-trips exactly", async () => {
+  const model = (options) => answersFor(options, () => probabilityAnswer(0.9));
+  const OnChange = Discern.on(Schema.String);
+  const a = OnChange.probability({ id: "a", instructions: "First" });
+  const b = OnChange.probability({ id: "b", instructions: "Second" });
+  const policyOf = (decision) =>
+    Discern.type(Schema.String).pipe(
+      Discern.when(decision.above(0.8), () => "hit"),
+      Discern.orElse(() => "miss"),
+    );
+
+  const first = Model.store();
+  await run(policyOf(a)("x"), model, [Model.recording(first)]);
+  const second = Model.store();
+  await run(policyOf(b)("x"), model, [Model.recording(second)]);
+
+  first.load(second.snapshot());
+  assert.equal(first.size(), 1, "loading replaces rather than merges");
+
+  // `a` was deliberately absent from the loaded fixture, so replay must miss.
+  await assert.rejects(
+    () => Effect.runPromise(policyOf(a).replay("x", first.snapshot())),
+    (error) => Model.isReplayMiss(error),
+  );
+  assert.equal(await Effect.runPromise(policyOf(b).replay("x", first.snapshot())), "hit");
+});
+
+test("an observation format from another version is rejected, not trusted", () => {
+  assert.throws(() => Model.store({ version: 1, entries: {} }), /Unsupported observation format v1/);
+  assert.throws(() => Model.store().load({ version: 99, entries: {} }), /Unsupported observation format v99/);
+});

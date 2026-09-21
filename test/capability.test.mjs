@@ -243,3 +243,26 @@ test("get rejects an id the registry does not have", () => {
   assert.equal(code.get("find"), find);
   assert.throws(() => code.get("nope"), /No capability "nope" in this registry \(have: find, review\)/);
 });
+
+test("an id that collides with Object.prototype still routes", async () => {
+  // Assigning `__proto__` on a plain object literal sets no own property, so a
+  // capability named this way would vanish from the routing criteria.
+  const odd = Capability.make({
+    id: "__proto__",
+    description: "A capability with an awkward name",
+    input: Request,
+    run: () => Effect.succeed("odd"),
+  });
+  const code = Capability.registry(Request, [odd, find]);
+
+  assert.deepEqual(Object.keys(code.decision.decision.criteria), ["__proto__", "find"]);
+
+  // The distribution has to be built the same careful way, or the fake provider
+  // reproduces the very bug this covers.
+  const probabilities = Object.fromEntries([
+    ["__proto__", 0.9],
+    ["find", 0.1],
+  ]);
+  const result = await run(code.invoke("x"), routesTo(probabilities));
+  assert.equal(result, "odd");
+});

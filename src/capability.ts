@@ -209,7 +209,7 @@ export const registry = <
     seen.add(member.id);
   }
 
-  const criteria: Record<string, string> = {};
+  const criteria: Record<string, string> = Object.create(null);
   for (const member of members) criteria[member.id] = criterion(member);
 
   const decision = on(input).classify({
