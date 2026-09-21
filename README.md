@@ -1,4 +1,4 @@
-# discern
+# Discern
 
 **Uncertainty-aware semantic control flow for Effect.**
 
