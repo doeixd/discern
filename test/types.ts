@@ -82,3 +82,55 @@ void matcher.replay("change", observations);
 
 const asPolicy: Discern.Policy<string, string | number | boolean, never, never, typeof Schema.String> = matcher;
 void asPolicy;
+
+// --- Capabilities -------------------------------------------------------------
+
+import * as Capability from "../src/capability.js";
+
+const Request = Schema.String;
+
+const findCap = Capability.make({
+  id: "find",
+  description: "Locate relevant code",
+  input: Request,
+  run: (request: string) => Effect.succeed(request.length),
+});
+
+const reviewCap = Capability.make({
+  id: "review",
+  description: "Review a change",
+  input: Request,
+  run: () => Effect.succeed("reviewed" as const),
+});
+
+// Ids stay literal, so `get` is checked against actual membership.
+const code = Capability.registry(Request, [findCap, reviewCap]);
+const foundCap: typeof findCap = code.get("find");
+void foundCap;
+// @ts-expect-error there is no such capability in this registry
+code.get("test-gaps");
+
+// invoke unions the member outputs.
+const invoked: Effect.Effect<number | "reviewed", unknown, unknown> = code.invoke("x");
+void invoked;
+
+// A fallback widens the success type rather than being swallowed.
+const withFallback: Effect.Effect<number | "reviewed" | "escalated", unknown, unknown> = code.invoke("x", {
+  onUncertain: () => "escalated" as const,
+});
+void withFallback;
+
+// Routing carries the full ranking, keyed by the registry's own ids.
+void code.route("x").pipe(
+  Effect.map((route) => (route._tag === "Matched" ? route.id : route.ranked[0]!.id)),
+);
+
+// Registries are homogeneous in input: a capability over a different schema is rejected.
+const numeric = Capability.make({
+  id: "numeric",
+  description: "Takes a number",
+  input: Schema.Number,
+  run: (value: number) => Effect.succeed(value),
+});
+// @ts-expect-error `numeric` does not accept the registry's input type
+Capability.registry(Request, [findCap, numeric]);

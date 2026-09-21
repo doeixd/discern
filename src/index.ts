@@ -780,6 +780,21 @@ const buildDefinition = <S extends Schema.Constraint>(schema: S, nodes: Readonly
   return Decision.make({ input: schema, decisions });
 };
 
+/**
+ * Ask one schema-scoped decision about one input, outside any matcher.
+ *
+ * Useful when you want the raw semantic answer rather than a branch — routing
+ * over a distribution, for instance.
+ */
+export const ask = <Input, D extends AnyDecision, S extends Schema.Constraint>(
+  node: DecisionNode<Input, D, S>,
+  input: Input,
+): Effect.Effect<Answer<D>, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> =>
+  Effect.map(
+    observe(node.schema, [node as unknown as AnyDecisionNode], input),
+    (answers) => answers[node.id] as Answer<D>,
+  ) as any;
+
 const nodesNeededForInput = <I>(cases: ReadonlyArray<Case>, input: I): ReadonlyArray<AnyDecisionNode> => {
   const nodes: Array<AnyDecisionNode> = [];
   for (const item of cases) {

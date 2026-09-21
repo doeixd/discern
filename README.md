@@ -514,16 +514,159 @@ const model = TypeSafeDecisionModel.layer({ model: "jev-latest" }).pipe(
 )
 ```
 
+## Capabilities
+
+`discern/capability` is a small layer above Discern: a **capability** is a
+named, typed Effect program, and a **registry** picks between several of them
+from a request.
+
+```ts
+import * as Capability from "discern/capability"
+
+const find = Capability.make({
+  id: "find",
+  description: "Locate code relevant to a behavior, feature or concept",
+  examples: ["Find where retries are implemented"],
+  input: Request,
+  run: request => findProgram(request)
+})
+
+const code = Capability.registry(Request, [find, review, testGaps])
+```
+
+When you know what you need, call it. No model is involved:
+
+```ts
+yield* find.run(request)
+```
+
+When you only know the intent, route:
+
+```ts
+yield* code.invoke(request)
+```
+
+### Routing is a decision, so uncertainty is a result
+
+A registry compiles its members' descriptions into one classification. Routing
+reads the **whole distribution**, not the provider's chosen label, and reports a
+near-tie instead of resolving it:
+
+```ts
+const route = yield* code.route(request)
+
+route._tag        // "Matched" | "Uncertain"
+route.ranked      // every capability with its probability, best first
+```
+
+```text
+find          .31
+review        .34
+test-gaps     .35
+              ---
+              Uncertain: no capability reached 0.7
+```
+
+That is the point. `find .31 / review .34 / test-gaps .35` is not a decision,
+and `invoke` fails with `RoutingUncertainError` rather than running `test-gaps`
+because it won by a hair. Handle it explicitly:
+
+```ts
+code.invoke(request, {
+  routing: { minProbability: 0.7, minMargin: 0.15 },
+  onUncertain: (request, route) => escalate(request, route.ranked)
+})
+```
+
+### Routing can be measured
+
+`registry.decision` is an ordinary Discern classification, so the router is a
+pattern — and patterns can be evaluated:
+
+```ts
+const report = yield* Discern.Eval.run(
+  Request,
+  code.decision.is("find", { match: 0.7, margin: 0.15 }),
+  labelledRequests
+)
+
+report.metrics.precision
+report.metrics.uncertain
+```
+
+`Discern.Eval.calibrate` sweeps routing thresholds against one observation batch
+per example, so you can tune `minProbability` without paying per candidate.
+
+This matters more than it looks: a classification is a simplex, so **adding a
+capability renormalizes every probability in the registry**. Thresholds
+calibrated against an older membership do not carry over. Re-run the evaluation
+when the registry changes.
+
+### What routing does not do
+
+`DecisionModel` answers are classifications, ratings and probabilities — there
+is no structured generation. A registry can therefore **select** a capability
+but never **parameterize** one.
+
+So registries are homogeneous: every member accepts the registry's input type,
+and that is enforced in the types. Capabilities with different inputs compose
+the ordinary way, as Effect code:
+
+```ts
+const dependencyReview = Capability.make({
+  id: "dependency-review",
+  description: "Assess the risk of upgrading a dependency",
+  input: UpgradeRequest,
+  run: request =>
+    Effect.gen(function* () {
+      const usages = yield* find.run({ query: `Usages of ${request.package}` })
+      return yield* compatibility.run({ package: request.package, usages })
+    })
+})
+```
+
+Static composition where you know the shape; routing only where you genuinely
+do not. This is also why Discern is a router and a policy engine rather than a
+tool-calling agent: the model picks, your code constructs.
+
+### Execution trees
+
+`Capability.make` wraps `run` in a named scope, so a recording knows which
+capability made each observation:
+
+```ts
+const observations = Discern.Model.store()
+// ... run under Discern.Model.recording(observations) ...
+
+Discern.Model.tree(observations.snapshot())
+```
+
+```text
+invoke
+├─ route            (the registry classification)
+└─ audit
+   └─ risk          (a decision inside the capability)
+```
+
+`Discern.Model.scope("name")` is the underlying primitive and works on any
+Effect, so you can nest by your own concepts rather than only by capability.
+
+Because replay is a layer, an entire `invoke` — the routing decision *and*
+everything the chosen capability did — replays from one recording.
+
 ## Mental model
 
 Discern separates the layers:
 
 ```text
-Decision       What semantic observation should be made?
-DecisionModel  Who / what produces that observation?
-Pattern        How should the evidence be interpreted?
-Match          Which ordered branch should run?
-Effect         What should the program do next?
+Effect         execution, services, errors, concurrency
+DecisionModel  who produces a semantic observation
+Interceptor    recording, replay, caching, budgets
+Decision       what observation should be made
+Pattern        how the evidence should be interpreted
+Policy         which ordered branch runs
+Capability     a named program the system knows how to do
+Registry       which capability a request belongs to
 ```
 
 Or, more compactly:

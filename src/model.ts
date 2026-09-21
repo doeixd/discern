@@ -10,6 +10,7 @@
  * Interception happens above answer validation, so recorded answers are the
  * validated ones and replay never has to re-derive them.
  */
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -37,6 +38,25 @@ export const isReplayMiss = (error: unknown): error is AiError.AiError =>
 // Observations
 // -------------------------------------------------------------------------------------------------
 
+/**
+ * The enclosing scope stack. It has a default, so it never appears in an
+ * Effect's requirements.
+ */
+export const CurrentScope = Context.Reference<ReadonlyArray<string>>("discern/CurrentScope", {
+  defaultValue: () => [],
+});
+
+/**
+ * Name a region of a program so that observations recorded inside it are
+ * attributed to it. Scopes nest, which is what turns a flat store into a tree.
+ */
+export const scope =
+  (name: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.flatMap(CurrentScope.useSync((path) => path), (parent) =>
+      Effect.provideService(effect, CurrentScope, [...parent, name]),
+    );
+
 /** One recorded semantic answer, with enough context to read it unaided. */
 export interface Observation {
   /** The decision's name in the batch it was requested in. Diagnostic only. */
@@ -44,6 +64,8 @@ export interface Observation {
   /** Fingerprint of the decision definition. Diagnostic only; the address already pins it. */
   readonly fingerprint: string;
   readonly kind: Decision.Any["_tag"];
+  /** The scope stack this observation was made under. */
+  readonly scope: ReadonlyArray<string>;
   /** A validated `Decision.Answer`. */
   readonly answer: unknown;
 }
@@ -136,6 +158,7 @@ const record = (
   decisions: Record<string, Decision.Any>,
   addresses: Record<string, string>,
   answers: Answers,
+  scopePath: ReadonlyArray<string>,
 ): void => {
   for (const [id, decision] of Object.entries(decisions)) {
     const answer = answers[id];
@@ -144,6 +167,7 @@ const record = (
       decisionId: id,
       fingerprint: decisionFingerprint(decision),
       kind: decision._tag,
+      scope: scopePath,
       answer,
     });
   }
@@ -166,10 +190,12 @@ export const recording =
     fromDecide((definition, input) =>
       Effect.flatMap(encodeState(definition, input), (state) => {
         const { addresses } = split(definition, state, undefined);
-        return Effect.map(inner.decide(definition as never, { input } as never), (response) => {
-          record(into, definition.decisions, addresses, response.answers as Answers);
-          return response;
-        });
+        return Effect.flatMap(CurrentScope.useSync((path) => path), (scopePath) =>
+          Effect.map(inner.decide(definition as never, { input } as never), (response) => {
+            record(into, definition.decisions, addresses, response.answers as Answers, scopePath);
+            return response;
+          }),
+        );
       }),
     );
 
@@ -228,10 +254,12 @@ export const caching =
           return Effect.succeed({ answers: hits, usage: emptyUsage() });
         }
         const reduced = Decision.make({ input: definition.input, decisions: missing });
-        return Effect.map(inner.decide(reduced as never, { input } as never), (response) => {
-          record(into, missing, addresses, response.answers as Answers);
-          return { answers: { ...hits, ...(response.answers as Answers) }, usage: response.usage };
-        });
+        return Effect.flatMap(CurrentScope.useSync((path) => path), (scopePath) =>
+          Effect.map(inner.decide(reduced as never, { input } as never), (response) => {
+            record(into, missing, addresses, response.answers as Answers, scopePath);
+            return { answers: { ...hits, ...(response.answers as Answers) }, usage: response.usage };
+          }),
+        );
       }),
     );
 
@@ -382,3 +410,44 @@ export const layer = (
 /** A layer that answers only from recorded observations and never reaches a model. */
 export const replayLayer = (source: Observations | ObservationStore): Layer.Layer<DecisionModel.DecisionModel> =>
   layer(unavailable, [replaying(source)]);
+
+// -------------------------------------------------------------------------------------------------
+// Reading a recording
+// -------------------------------------------------------------------------------------------------
+
+/** Observations grouped by the scopes they were recorded under. */
+export interface ScopeTree {
+  readonly name: string;
+  readonly observations: ReadonlyArray<Observation>;
+  readonly children: ReadonlyArray<ScopeTree>;
+}
+
+/**
+ * Arrange a recording as the tree of scopes it happened in. Observations made
+ * outside any {@link scope} land at the root.
+ */
+export const tree = (source: Observations, rootName = ""): ScopeTree => {
+  const root: { name: string; observations: Array<Observation>; children: Map<string, any> } = {
+    name: rootName,
+    observations: [],
+    children: new Map(),
+  };
+  for (const observation of Object.values(source.entries)) {
+    let node = root;
+    for (const name of observation.scope ?? []) {
+      let child = node.children.get(name);
+      if (child === undefined) {
+        child = { name, observations: [], children: new Map() };
+        node.children.set(name, child);
+      }
+      node = child;
+    }
+    node.observations.push(observation);
+  }
+  const freeze = (node: typeof root): ScopeTree => ({
+    name: node.name,
+    observations: node.observations,
+    children: [...node.children.values()].map(freeze),
+  });
+  return freeze(root);
+};

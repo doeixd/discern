@@ -26,12 +26,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./capability": {
+      "types": "./dist/capability.d.ts",
+      "import": "./dist/capability.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && node --test test/index.test.mjs",
+    "test": "npm run build && node --test \"test/*.test.mjs\"",
     "test:types": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck test/types.ts",
     "check": "npm run typecheck && npm run test:types && npm test"
   },
