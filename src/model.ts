@@ -64,7 +64,14 @@ export interface Observation {
   /** Fingerprint of the decision definition. Diagnostic only; the address already pins it. */
   readonly fingerprint: string;
   readonly kind: Decision.Any["_tag"];
-  /** The scope stack this observation was made under. */
+  /**
+   * The scope stack this observation was most recently made under.
+   *
+   * An observation is content-addressed, so one entry covers every place the
+   * same decision was asked about the same input. Re-recording moves it to the
+   * newest scope. For a faithful per-run tree, record each run into its own
+   * store.
+   */
   readonly scope: ReadonlyArray<string>;
   /** A validated `Decision.Answer`. */
   readonly answer: unknown;

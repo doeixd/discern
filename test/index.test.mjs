@@ -508,3 +508,91 @@ test("interceptors decorate a DecisionModel layer Discern did not build", async 
 
   assert.equal(await Effect.runPromise(policy.replay("x", observations.snapshot())), "block");
 });
+
+test("reordering classification criteria is a cache miss, not a silent reuse", async () => {
+  // Criteria reach the provider in declaration order, so a reorder may change
+  // the answer. Addresses must not treat the two as interchangeable.
+  const make = (criteria) =>
+    Discern.on(Schema.String).classify({ id: "impact", instructions: "Classify", criteria });
+
+  const a = make({ safe: "Safe", breaking: "Breaks callers" });
+  const b = make({ breaking: "Breaks callers", safe: "Safe" });
+  assert.notEqual(a.fingerprint, b.fingerprint);
+
+  let calls = 0;
+  const model = (options) => {
+    calls += 1;
+    return answersFor(options, () => classifyAnswer("safe", { safe: 0.9, breaking: 0.1 }));
+  };
+  const policyOf = (decision) =>
+    Discern.type(Schema.String).pipe(
+      Discern.when(decision.is("safe"), () => "ok"),
+      Discern.orElse(() => "no"),
+    );
+
+  const store = Model.store();
+  const cache = [Model.caching(store)];
+  await run(policyOf(a)("x"), model, cache);
+  await run(policyOf(b)("x"), model, cache);
+  assert.equal(calls, 2, "the reordered decision is asked again rather than reusing the answer");
+});
+
+test("input objects are addressed structurally, so key order does not split the cache", async () => {
+  const Ticket = Schema.Record(Schema.String, Schema.Number);
+  const busy = Discern.on(Ticket).probability({ id: "busy", instructions: "Busy" });
+  const policy = Discern.type(Ticket).pipe(
+    Discern.when(busy.above(0.8), () => "yes"),
+    Discern.orElse(() => "no"),
+  );
+
+  let calls = 0;
+  const model = (options) => {
+    calls += 1;
+    return answersFor(options, () => probabilityAnswer(0.9));
+  };
+
+  const store = Model.store();
+  const cache = [Model.caching(store)];
+  assert.equal(await run(policy({ a: 1, b: 2 }), model, cache), "yes");
+  assert.equal(await run(policy({ b: 2, a: 1 }), model, cache), "yes");
+  assert.equal(calls, 1, "the same JSON object in a different key order is the same input");
+});
+
+test("ask requires a schema-scoped decision", () => {
+  const unscoped = Discern.probability({ id: "u", instructions: "x" });
+  assert.throws(() => Discern.ask(unscoped, "x"), /requires a schema-scoped decision/);
+});
+
+test("Eval.sweep skips decisions that deterministic structure already settles", async () => {
+  let asked = 0;
+  const model = (options) => {
+    asked += 1;
+    return answersFor(options, () => probabilityAnswer(0.9));
+  };
+
+  const risky = Discern.on(Schema.String).probability({ id: "risk", instructions: "Risky" });
+  const sourceOnly = Discern.deterministic((path) => path.endsWith(".ts"), { id: "source" });
+
+  const result = await run(
+    Discern.Eval.sweep({
+      schema: Schema.String,
+      values: [0.5, 0.9],
+      pattern: (threshold) => Discern.and(sourceOnly, risky.atLeast(threshold)),
+      examples: [
+        { input: "a.ts", expected: true },
+        { input: "b.md", expected: false },
+        { input: "c.md", expected: false },
+      ],
+    }),
+    model,
+  );
+
+  assert.equal(asked, 1, "only the .ts example needs the model");
+  assert.deepEqual(
+    result.map((entry) => [entry.value, entry.report.metrics.accuracy]),
+    [
+      [0.5, 1],
+      [0.9, 1],
+    ],
+  );
+});

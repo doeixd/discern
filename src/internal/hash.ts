@@ -4,21 +4,35 @@
  */
 import type * as Decision from "effect/unstable/ai/Decision";
 
-/**
- * A canonical string for any JSON-like value. Object keys are sorted so that
- * declaration order never changes a fingerprint; array order is preserved
- * because it is meaningful (an ordered `Rate` scale, for instance).
- */
-export const stable = (value: unknown): string => {
+const canonical = (value: unknown, sortKeys: boolean): string => {
   if (value === undefined) return "undefined";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map((item) => canonical(item, sortKeys)).join(",")}]`;
   const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
+  const keys = Object.keys(record);
+  return `{${(sortKeys ? [...keys].sort() : keys)
+    .map((key) => `${JSON.stringify(key)}:${canonical(record[key], sortKeys)}`)
     .join(",")}}`;
 };
+
+/**
+ * A canonical string for any JSON-like value, treating objects as unordered.
+ *
+ * Use this for *data*: a JSON object's key order carries no meaning, so
+ * `{b, a}` and `{a, b}` are the same input and should hash alike. Array order
+ * is always preserved, because it is meaningful.
+ */
+export const stable = (value: unknown): string => canonical(value, true);
+
+/**
+ * A canonical string that preserves key order.
+ *
+ * Use this for *decisions*. A classification's criteria reach the provider in
+ * declaration order, so reordering them can change the answer. Hashing them as
+ * written means a reorder is a cache miss (costing one model call) rather than
+ * a silent reuse of an answer produced under a different prompt.
+ */
+export const stableOrdered = (value: unknown): string => canonical(value, false);
 
 /**
  * Two independently seeded FNV-1a lanes, concatenated. Fingerprints gate replay
@@ -38,7 +52,7 @@ export const hash = (value: unknown): string => {
 };
 
 /** Identity of a decision *definition* — instructions and criteria, not its id. */
-export const decisionFingerprint = (value: Decision.Any): string => `df_${hash(value)}`;
+export const decisionFingerprint = (value: Decision.Any): string => `df_${hash(stableOrdered(value))}`;
 
 /**
  * Content address of one semantic observation: the decision definition together
@@ -49,4 +63,4 @@ export const decisionFingerprint = (value: Decision.Any): string => `df_${hash(v
  * asked about different inputs, without collisions.
  */
 export const observationAddress = (decision: Decision.Any, state: unknown): string =>
-  `o_${hash({ decision, state })}`;
+  `o_${hash(`${stableOrdered(decision)}|${stable(state)}`)}`;

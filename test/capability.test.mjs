@@ -191,14 +191,14 @@ test("observations are attributed to the capability that made them", async () =>
   assert.equal(result, "risky:deploy on friday");
 
   const tree = Model.tree(observations.snapshot(), "invoke");
-  // Routing happened outside any capability; the risk decision happened inside one.
-  assert.deepEqual(
-    tree.observations.map((observation) => observation.decisionId),
-    [code.decision.id],
-  );
+  // Routing is its own scope; the risk decision belongs to the capability that made it.
+  assert.deepEqual(tree.observations, []);
   assert.deepEqual(
     tree.children.map((child) => [child.name, child.observations.map((o) => o.decisionId)]),
-    [["audit", ["risk"]]],
+    [
+      ["route", [code.decision.id]],
+      ["audit", ["risk"]],
+    ],
   );
 });
 
@@ -236,4 +236,10 @@ test("a whole capability invocation replays from one recording", async () => {
   );
   assert.equal(replayed, "now:prod is down");
   assert.equal(calls, 2, "routing and the capability body both replayed");
+});
+
+test("get rejects an id the registry does not have", () => {
+  const code = Capability.registry(Request, [find, review]);
+  assert.equal(code.get("find"), find);
+  assert.throws(() => code.get("nope"), /No capability "nope" in this registry \(have: find, review\)/);
 });

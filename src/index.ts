@@ -567,7 +567,7 @@ const distinctNodes = (nodes: ReadonlyArray<AnyDecisionNode>): ReadonlyArray<Any
 // Input-aware scopes
 // -------------------------------------------------------------------------------------------------
 
-export interface Scope<S extends Schema.Constraint> {
+export interface DecisionScope<S extends Schema.Constraint> {
   readonly schema: S;
   readonly classify: <Label extends string>(options: {
     readonly id?: string;
@@ -587,14 +587,13 @@ export interface Scope<S extends Schema.Constraint> {
 }
 
 /** Bind semantic decision constructors to one input schema. */
-export const on = <S extends Schema.Constraint>(schema: S): Scope<S> => ({
+export const on = <S extends Schema.Constraint>(schema: S): DecisionScope<S> => ({
   schema,
   classify: (options) => classifyFor<S["Type"], any, S>(options as any, schema),
   probability: (options) => probabilityFor<S["Type"], S>(options, schema),
   rate: (options) => rateFor<S["Type"], any, S>(options as any, schema),
 });
 
-export const scope = on;
 
 // -------------------------------------------------------------------------------------------------
 // Matcher, plan & tracing
@@ -789,11 +788,15 @@ const buildDefinition = <S extends Schema.Constraint>(schema: S, nodes: Readonly
 export const ask = <Input, D extends AnyDecision, S extends Schema.Constraint>(
   node: DecisionNode<Input, D, S>,
   input: Input,
-): Effect.Effect<Answer<D>, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> =>
-  Effect.map(
+): Effect.Effect<Answer<D>, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> => {
+  if (node.schema === undefined) {
+    throw new Error("Discern.ask requires a schema-scoped decision created with Discern.on(schema)");
+  }
+  return Effect.map(
     observe(node.schema, [node as unknown as AnyDecisionNode], input),
     (answers) => answers[node.id] as Answer<D>,
   ) as any;
+};
 
 const nodesNeededForInput = <I>(cases: ReadonlyArray<Case>, input: I): ReadonlyArray<AnyDecisionNode> => {
   const nodes: Array<AnyDecisionNode> = [];
@@ -1173,19 +1176,27 @@ export const Eval = {
     readonly examples: ReadonlyArray<EvalExample<I>>;
   }): Effect.Effect<ReadonlyArray<{ readonly value: V; readonly report: EvalReport<I> }>, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> => {
     const patterns = options.values.map((value) => options.pattern(value));
-    const allNodes = distinctDecisions(patterns);
     return Effect.map(
-      effectAllSequential(options.examples, (example) =>
-        Effect.map(observe(options.schema, allNodes, example.input), (answers) => ({ example, answers })),
-      ),
+      effectAllSequential(options.examples, (example) => {
+        // Only the decisions some candidate actually needs for this input:
+        // deterministic structure that already settles a case costs nothing.
+        const needed = distinctNodes(
+          patterns.flatMap((pattern) => preview(pattern, example.input).decisions),
+        );
+        return Effect.map(observe(options.schema, needed, example.input), (answers) => ({ example, answers }));
+      }),
       (observed) =>
         options.values.map((value, index) => {
           const pattern = patterns[index]!;
-          const records = observed.map(({ example, answers }) => ({
-            input: example.input,
-            expected: example.expected,
-            status: pattern.evaluate(example.input, answers)._tag,
-          } satisfies EvalRecord<I>));
+          const records = observed.map(({ example, answers }) => {
+            const attempt = preview(pattern, example.input);
+            const result = attempt.resolved ?? pattern.evaluate(example.input, answers);
+            return {
+              input: example.input,
+              expected: example.expected,
+              status: result._tag,
+            } satisfies EvalRecord<I>;
+          });
           return { value, report: { records, metrics: metricsOf(records) } };
         }),
     ) as any;
@@ -1203,6 +1214,7 @@ export const Eval = {
       Eval.sweep(options),
       (results) => {
         const metric = options.metric ?? "f1";
+        if (results.length === 0) throw new Error("Discern.Eval.calibrate needs at least one candidate value");
         const sorted = [...results].sort((a, b) => {
           const delta = b.report.metrics[metric] - a.report.metrics[metric];
           return delta !== 0 ? delta : b.report.metrics.coverage - a.report.metrics.coverage;

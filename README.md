@@ -480,7 +480,9 @@ const calibration = yield* Discern.Eval.calibrate({
 calibration.best
 ```
 
-Discern asks the model once per example for the shared underlying decisions, then evaluates every candidate threshold deterministically.
+Discern asks the model once per example for the shared underlying decisions,
+then evaluates every candidate threshold deterministically. Examples that
+deterministic structure already settles cost no model call at all.
 
 ## Provider-neutral
 
@@ -643,10 +645,15 @@ Discern.Model.tree(observations.snapshot())
 
 ```text
 invoke
-├─ route            (the registry classification)
-└─ audit
-   └─ risk          (a decision inside the capability)
+├─ route            the registry classification
+└─ audit            the capability that was chosen
+   └─ risk          a decision it made internally
 ```
+
+An observation is content-addressed, so one entry covers every place the same
+decision was asked about the same input, and its scope is wherever it was used
+most recently. Record each run into its own store when you want a faithful
+per-run tree.
 
 `Discern.Model.scope("name")` is the underlying primitive and works on any
 Effect, so you can nest by your own concepts rather than only by capability.

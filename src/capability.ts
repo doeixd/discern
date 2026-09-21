@@ -225,7 +225,7 @@ export const registry = <
   const route = (input_: S["Type"], routeOptions: RouteOptions = {}) => {
     const minProbability = routeOptions.minProbability ?? 0.7;
     const minMargin = routeOptions.minMargin ?? 0.15;
-    return Effect.map(ask(decision, input_), (answer): Route<IdOf<Members[number]>> => {
+    return Effect.map(Model.scope("route")(ask(decision, input_)), (answer): Route<IdOf<Members[number]>> => {
       const ranked = ids
         .map((id) => ({ id, probability: answer.probabilities[id] ?? 0 }))
         .sort((a, b) => b.probability - a.probability);
@@ -258,7 +258,13 @@ export const registry = <
     input,
     members,
     ids,
-    get: ((id: string) => byId.get(id)) as Registry<Members, S>["get"],
+    get: ((id: string) => {
+      const member = byId.get(id);
+      if (member === undefined) {
+        throw new Error(`No capability "${id}" in this registry (have: ${ids.join(", ")})`);
+      }
+      return member;
+    }) as Registry<Members, S>["get"],
     decision,
     route,
     invoke,
