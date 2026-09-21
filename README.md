@@ -2,11 +2,19 @@
 
 **Uncertainty-aware semantic pattern matching for Effect.**
 
-[![Animated explanation of Discern: batch model evidence, preserve uncertainty, and route to explicit policies and procedures.](docs/assets/discern-explainer.gif)](docs/assets/discern-explainer.mp4)
+[![Tutorial preview: Jev receives a code change and a question, then returns an estimated regression probability. Click to watch the narrated lesson.](docs/assets/discern-explainer.gif)](docs/assets/discern-explainer.mp4)
 
-[Watch the full-quality video](docs/assets/discern-explainer.mp4) · Silent, with on-screen explanations · [Animation source](docs/animation/README.md)
+[Watch the narrated tutorial](docs/assets/discern-explainer.mp4) · [Read the
+transcript](docs/animation/transcript.md) · [Manim
+source](docs/animation/README.md)
 
-Effect v4 has `Decision` / `DecisionModel`: provider-neutral semantic observations such as classification, probability and ordered rating. Discern turns those observations into **patterns and control flow**.
+Follow one code change through **Jev → Effect Decision / DecisionModel →
+Discern → Procedures → nested registries**. The image previews the opening;
+the full video includes narration and captions.
+
+Effect v4 has `Decision` / `DecisionModel`: provider-neutral semantic
+observations such as classification, probability and ordered rating. Discern
+turns those observations into **patterns and control flow**.
 
 Think of it as the semantic counterpart to Effect `Match`:
 
@@ -18,8 +26,8 @@ Decision / DecisionModel -> Discern
 A normal pattern matches facts you can compute exactly. A Discern pattern
 matches **semantic evidence** produced by a `DecisionModel`.
 
-Here is the whole stack — Effect's `Decision` vocabulary, a policy, procedures,
-and a real provider:
+Here is the whole stack — Effect's `Decision` vocabulary, a policy,
+procedures, and a real provider:
 
 ```ts
 import { Effect, Layer, Schema } from "effect";
@@ -126,7 +134,7 @@ Three things are worth noticing.
 
 `review(change)` asks **one** `DecisionModel` call per change, however many
 cases refer to `impact` and `risky`. Discern collects the distinct decisions a
-matcher needs and batches them.
+policy needs and batches them.
 
 **A 0.62 risk never reaches `ship`.** It is neither above `0.8` nor below
 `missBelow: 0.5`, so it is not a miss — the program takes `onUncertain`
@@ -136,25 +144,28 @@ And `changes.invoke(...)` reports what it cannot decide. A request that splits
 `.48 / .52` between two procedures is not a decision, so it goes to
 `onUncertain` rather than to whichever won by a hair.
 
-This example is compiled as `examples/headline.ts`, so it cannot drift from the
-library or from the provider packages.
+This example is compiled as `examples/headline.ts`, so it cannot drift from
+the library or from the provider packages.
 
 ## Contents
 
 - [Status](#status) · [Install](#install)
 - **Why** — [Why not `Decision` directly?](#why-not-decision-directly)
+- **Programs** — [Policies](#policies)
 - **Patterns** — [One observation, many patterns](#one-observation-many-patterns) ·
-  [Input-aware decisions](#input-aware-decisions) ·
-  [Semantic patterns](#semantic-patterns) ·
-  [Pattern algebra](#pattern-algebra) ·
-  [Mix deterministic and semantic](#mix-deterministic-and-semantic-patterns) ·
+  [Input-aware decisions](#input-aware-decisions) · [Semantic
+  patterns](#semantic-patterns) · [Pattern algebra](#pattern-algebra) · [Mix
+  deterministic and semantic](#mix-deterministic-and-semantic-patterns) ·
   [Exhaustive classification](#exhaustive-semantic-classification)
 - **Inspection** — [Compiled plans](#inspectable-compiled-plans) ·
   [Stable identity](#stable-identity) · [Traces](#traces)
 - **Running it** — [Observations, recording and replay](#observations-recording-and-replay) ·
-  [Budgets](#budgets) · [Evaluation and calibration](#evaluation-and-calibration) ·
+  [Budgets](#budgets) · [Evaluation and
+  calibration](#evaluation-and-calibration) ·
   [Provider-neutral](#provider-neutral)
-- **Routing** — [Procedures](#procedures) · [Route projection](#route-on-only-what-the-router-needs) · [Eligibility](#rule-procedures-out-before-asking)
+- **Routing** — [Procedures](#procedures) ·
+  [Route projection](#route-on-only-what-the-router-needs) ·
+  [Eligibility](#rule-procedures-out-before-asking)
 - [Mental model](#mental-model) · [License](#license)
 
 ## Status
@@ -198,8 +209,9 @@ exercises uncertainty, recording, replay, budgets and routing end to end.
 
 ## Why not `Decision` directly?
 
-Effect already gives you everything you need to ask a model a question. Here is
-the policy from above written straight against `Decision` and `DecisionModel`:
+Effect already gives you everything you need to ask a model a question. Here
+is the policy from above written straight against `Decision` and
+`DecisionModel`:
 
 ```ts
 import { Effect, Schema } from "effect"
@@ -278,8 +290,8 @@ quietly.
 
 **A 0.62 risk ships.** `answers.risk.probability > 0.8` is false at 0.62, so
 the change falls through to `ship`. The model said *maybe* and the program
-heard *no*. The second version sends it to `onUncertain`, because
-`above(0.8, { missBelow: 0.5 })` describes three outcomes rather than two:
+heard *no*. The second version sends it to `onUncertain`, because `above(0.8,
+{ missBelow: 0.5 })` describes three outcomes rather than two:
 
 ```text
 >= .80    Match
@@ -305,26 +317,64 @@ decisions from the request for that input.
 
 **There is nothing to inspect or reuse.** No compiled plan, no trace, and no
 content-addressed observations — so no replay, no cache, no budget, and no way
-to find out whether `0.8` was the right number in the first place. A pattern is
-a value, so `Discern.Eval.calibrate` can sweep thresholds over labelled
+to find out whether `0.8` was the right number in the first place. A pattern
+is a value, so `Discern.Eval.calibrate` can sweep thresholds over labelled
 examples and let the data choose.
 
 Both halves are compiled as `examples/comparison.ts`.
 
+## Policies
+
+The pattern sections below build the *evidence*. A **policy** is what runs on
+it.
+
+`Discern.type(schema)` starts a matcher, `Discern.when` adds ordered cases,
+and `Discern.orElse` finishes it — turning the matcher into a callable
+**`Policy`**:
+
+```ts
+const review = Discern.type(Change).pipe(
+  Discern.when(impact.is("breaking"), () => "migrate"),
+  Discern.onUncertain(() => "human-review"),
+  Discern.orElse(() => "ship")
+)
+```
+
+That is why `review(change)` is callable at all. It returns an `Effect`
+requiring a `DecisionModel`, and it carries three more things:
+
+```ts
+review(change)                      // Effect<Verdict, …, DecisionModel>
+review.plan                         // the compiled, serializable plan
+review.runWithTrace(change)         // { value, trace }
+review.replay(change, observations) // rerun from a recording, without a model
+```
+
+There are two spellings, deliberately:
+
+- `Discern.type(schema)` builds a **reusable** policy you call many times.
+- `Discern.value(schema, input)` matches **one value** immediately, so `orElse`
+  hands back the `Effect` itself rather than something callable.
+
+For the rest of this README, *matcher* means one still being assembled and
+*policy* means a finished one.
+
 ## One observation, many patterns
 
-A semantic decision is an observation. Patterns are deterministic views over that observation.
+A semantic decision is an observation. Patterns are deterministic views over
+that observation.
 
 ```ts
 impact.is("breaking")
 impact.is("behavioral")
 impact.oneOf("behavioral", "breaking")
-impact.margin("breaking", "behavioral", 0.2)
+impact.margin("breaking", "behavioral", 0.2) // P(breaking) - P(behavioral) >= 0.2
 ```
 
-Using all four in the same matcher still classifies `impact` once.
+Using all four in the same policy still classifies `impact` once.
 
-Discern collects the unique decisions required by the matcher and batches them into one `DecisionModel.decide(...)` call.
+Discern collects the unique decisions a policy requires and batches them into
+one `DecisionModel.decide(...)` call.
 
 ```text
                        input
@@ -358,9 +408,11 @@ const urgent = OnTicket.probability({
 })
 ```
 
-This gives `Discern.when(pattern, ticket => ...)` the correct handler input type and lets classification decisions participate in `Discern.match(...)`.
+This gives `Discern.when(pattern, ticket => ...)` the correct handler input
+type and lets classification decisions participate in `Discern.match(...)`.
 
-Unscoped `Discern.classify`, `Discern.probability` and `Discern.rate` also exist for lower-level composition.
+`Discern.classify`, `Discern.probability` and `Discern.rate` also exist
+without a schema, for lower-level composition.
 
 ## Semantic patterns
 
@@ -381,18 +433,26 @@ const impact = OnChange.classify({
 impact.is("breaking")
 impact.oneOf("behavioral", "breaking")
 impact.not("none")
-impact.margin("breaking", "behavioral", 0.15)
+impact.margin("breaking", "behavioral", 0.15) // breaking leads behavioral by >= 0.15
 ```
 
-Confidence-aware classification is tri-state:
+`impact.is("breaking")` on its own takes the provider's chosen label at face
+value. Give it thresholds and it becomes tri-state, like a probability:
 
 ```ts
 impact.is("breaking", {
-  match: 0.8,
-  miss: 0.2,
-  margin: 0.15
+  match: 0.8,   // P(breaking) at or above this is a Match
+  miss: 0.2,    // at or below this is a Miss — in between is Uncertain
+  margin: 0.15  // and it must lead the runner-up label by at least this much
 })
 ```
+
+`match` defaults to `0.8`, and `miss` defaults to whatever `match` is — so
+omitting `miss` leaves no uncertain band at all.
+
+`margin` only bites when `match` is low. A label sitting at `0.8` already
+leads everything else by at least `0.6`, because the distribution sums to one;
+it is at `0.45` that the runner-up might be right behind it.
 
 ### Probability
 
@@ -427,15 +487,26 @@ severity.between("minor", "major")
 
 ### Custom semantic refinement
 
+`where` interprets an answer as a boolean:
+
 ```ts
-const ambiguous = risk.whereResult(({ probability }) =>
-  probability >= 0.4 && probability <= 0.6
-    ? Discern.matched()
-    : Discern.missed()
+const borderline = risk.where(
+  ({ probability }) => probability >= 0.4 && probability <= 0.6
 )
 ```
 
-`where(...)` is the simpler boolean form. These are **semantic refinements**, not TypeScript `value is T` proofs.
+`whereResult` is the same thing with uncertainty available, for when two
+outcomes are not enough:
+
+```ts
+const ambiguous = risk.whereResult(({ probability }) =>
+  probability > 0.6 ? Discern.missed()
+  : probability >= 0.4 ? Discern.uncertain("too close to call")
+  : Discern.matched()
+)
+```
+
+Both are **semantic refinements**, not TypeScript `value is T` proofs.
 
 ## Pattern algebra
 
@@ -447,7 +518,23 @@ Discern.or(a, b)
 Discern.not(a)
 ```
 
-For `and`, `Miss` dominates and otherwise `Uncertain` dominates. For `or`, `Match` dominates and otherwise `Uncertain` dominates. `not` swaps `Match` / `Miss` and preserves `Uncertain`.
+In `and`, `Miss` dominates; otherwise `Uncertain` does:
+
+| `and` | Match | Uncertain | Miss |
+| --- | --- | --- | --- |
+| **Match** | Match | Uncertain | Miss |
+| **Uncertain** | Uncertain | Uncertain | Miss |
+| **Miss** | Miss | Miss | Miss |
+
+In `or`, `Match` dominates; otherwise `Uncertain` does:
+
+| `or` | Match | Uncertain | Miss |
+| --- | --- | --- | --- |
+| **Match** | Match | Match | Match |
+| **Uncertain** | Match | Uncertain | Uncertain |
+| **Miss** | Match | Uncertain | Miss |
+
+`not` swaps `Match` and `Miss`, and leaves `Uncertain` alone.
 
 ## Mix deterministic and semantic patterns
 
@@ -465,13 +552,16 @@ const riskySource = Discern.and(
 )
 ```
 
-Discern partially evaluates deterministic structure before calling `DecisionModel`. If `sourceFile` is already false, the risk decision is unnecessary and no model call is made for that branch.
+Discern partially evaluates deterministic structure before calling
+`DecisionModel`. If `sourceFile` is already false, the risk decision is
+unnecessary and no model call is made for that branch.
 
 Aliases: `Discern.predicate` and `Discern.structural`.
 
 ## Exhaustive semantic classification
 
-Arbitrary semantic predicates are not statically exhaustive. A single classification decision is different: its output is a known label union.
+Arbitrary semantic predicates are not statically exhaustive. A single
+classification decision is different: its output is a known label union.
 
 ```ts
 const handleImpact = Discern.match(impact).pipe(
@@ -483,13 +573,16 @@ const handleImpact = Discern.match(impact).pipe(
 )
 ```
 
-TypeScript rejects `Discern.exhaustive` until every classification label is handled.
+TypeScript rejects `Discern.exhaustive` until every classification label is
+handled.
 
-This means “all model output labels are handled”, not “the model is metaphysically certain about the world”.
+This means “all model output labels are handled”, not “the model is
+metaphysically certain about the world”.
 
 ## Inspectable compiled plans
 
-Matchers compile to a serializable semantic plan:
+A policy compiles to a serializable semantic plan. So does an unfinished
+matcher, which is why you can inspect one before choosing a fallback:
 
 ```ts
 const matcher = Discern.type(Change).pipe(
@@ -513,7 +606,8 @@ A plan includes:
 - pattern ASTs
 - a plan fingerprint
 
-That makes semantic programs inspectable by devtools instead of hiding behavior in opaque prompts.
+That makes semantic programs inspectable by devtools instead of hiding
+behavior in opaque prompts.
 
 ## Stable identity
 
@@ -526,14 +620,16 @@ const risk = OnChange.probability({
 })
 ```
 
-Discern also fingerprints the actual decision definition. Reusing one ID for two different definitions in the same plan is rejected.
+Discern also fingerprints the actual decision definition. Reusing one ID for
+two different definitions in the same plan is rejected.
 
 Without an explicit ID, Discern derives one from the decision definition.
 
 ## Observations, recording and replay
 
-Every semantic observation in Discern funnels through one `DecisionModel` call.
-So recording, replay, caching and budgets are not matcher features — they are
+Every semantic observation in Discern funnels through one `DecisionModel`
+call. So recording, replay, caching and budgets are not policy features — they
+are
 **decorators of the service**, and they apply to any Effect program that
 reaches a `DecisionModel`, including code that never mentions Discern.
 
@@ -549,13 +645,13 @@ const model = anyDecisionModelLayer.pipe(
 )
 ```
 
-`intercept` decorates *any* `DecisionModel` layer, including one from a provider
-package you do not own. Interceptors are listed outermost-first, so above: the
-recorder sees every answer, the cache is consulted next, and only genuine model
-calls draw from the budget.
+`intercept` decorates *any* `DecisionModel` layer, including one from a
+provider package you do not own. Interceptors are listed outermost-first, so
+above: the recorder sees every answer, the cache is consulted next, and only
+genuine model calls draw from the budget.
 
-Observations are **content-addressed** by the decision definition together with
-the encoded input:
+Observations are **content-addressed** by the decision definition together
+with the encoded input:
 
 ```text
 address = hash({ decision, state })
@@ -566,7 +662,7 @@ which has a few consequences worth knowing:
 - A recording and a cache are the **same data structure**. There is no separate
   cache key to write, and no key function to get wrong.
 - The same decision asked about two different inputs gets two entries, so one
-  store can span many matchers and many inputs without collisions.
+  store can span many policies and many inputs without collisions.
 - If a decision's instructions or criteria change, its address changes, so a
   stale answer is simply absent rather than silently reused.
 
@@ -588,7 +684,9 @@ Handlers still execute. Replay removes semantic nondeterminism; it does not
 memoize your Effect program, so side effects are not accidentally skipped.
 
 Because replay is a layer, a program made of *several* policies plus ordinary
-Effect code replays as a whole:
+Effect code replays as a whole. Given two independent policies over the same
+input — say `riskPolicy` and `urgencyPolicy`, each built exactly like `review`
+above:
 
 ```ts
 const program = (input: Change) =>
@@ -603,21 +701,22 @@ yield* program(change).pipe(
 )
 ```
 
-Caching is partial for the same reason: a batch of four decisions with three
-already known sends exactly one decision onward.
+Caching works decision by decision for the same reason — an address covers one
+decision, not a whole batch — so four decisions with three already known send
+exactly one onward.
 
 ## Traces
 
-A trace is separate, and answers a different question — not "what did the model
-say?" but "what did this matcher *do* with it?"
+A trace is separate, and answers a different question — not "what did the
+model say?" but "what did this policy *do* with it?"
 
 ```ts
 const { value, trace } = yield* review.runWithTrace(change)
 ```
 
 It records each evaluated case and its `Match | Miss | Uncertain` status, the
-selected case or fallback, the plan fingerprint, and the raw answers by decision
-id. Use it for diagnostics; use `Observations` to replay.
+selected case or fallback, the plan fingerprint, and the raw answers by
+decision id. Use it for diagnostics; use `Observations` to replay.
 
 ## Budgets
 
@@ -725,9 +824,9 @@ const model = TypeSafeDecisionModel.layer({ model: "jev-latest" }).pipe(
 
 ## Procedures
 
-`@doeixd/discern/procedure` is a small layer above Discern: a **procedure** is a
-named, typed Effect program, and a **registry** picks between several of them
-from a request.
+`@doeixd/discern/procedure` is a small layer above Discern: a **procedure** is
+a named, typed Effect program, and a **registry** picks between several of
+them from a request.
 
 ```ts
 import * as Procedure from "@doeixd/discern/procedure"
@@ -758,8 +857,8 @@ yield* code.invoke(request)
 ### Routing is a decision, so uncertainty is a result
 
 A registry compiles its members' descriptions into one classification. Routing
-reads the **whole distribution**, not the provider's chosen label, and reports a
-near-tie instead of resolving it:
+reads the **whole distribution**, not the provider's chosen label, and reports
+a near-tie instead of resolving it:
 
 ```ts
 const route = yield* code.route(request)
@@ -777,8 +876,8 @@ test-gaps     .35
 ```
 
 That is the point. `find .31 / review .34 / test-gaps .35` is not a decision,
-and `invoke` fails with `RoutingUncertainError` rather than running `test-gaps`
-because it won by a hair. Handle it explicitly:
+and `invoke` fails with `RoutingUncertainError` rather than running
+`test-gaps` because it won by a hair. Handle it explicitly:
 
 ```ts
 code.invoke(request, {
@@ -803,13 +902,14 @@ report.metrics.precision
 report.metrics.uncertain
 ```
 
-`Discern.Eval.calibrate` sweeps routing thresholds against one observation batch
-per example, so you can tune `minProbability` without paying per candidate.
+`Discern.Eval.calibrate` sweeps routing thresholds against one observation
+batch per example, so you can tune `minProbability` without paying per
+candidate.
 
 This matters more than it looks: a classification is a simplex, so **adding a
 procedure renormalizes every probability in the registry**. Thresholds
-calibrated against an older membership do not carry over. Re-run the evaluation
-when the registry changes.
+calibrated against an older membership do not carry over. Re-run the
+evaluation when the registry changes.
 
 ### What routing does not do
 
@@ -862,8 +962,8 @@ full typed input ─────────────────────
 ```
 
 Fewer tokens and better signal, and because observations are content-addressed
-the routing answer is now keyed on the question alone — the same question about
-a different diff reuses it instead of paying again.
+the routing answer is now keyed on the question alone — the same question
+about a different diff reuses it instead of paying again.
 
 `registry.decision` is typed by the projection, so evaluating the router uses
 the projected schema and projected examples.
@@ -975,8 +1075,8 @@ most recently. Record each run into its own store when you want a faithful
 per-run tree.
 
 `Discern.Model.region("name")` is the underlying primitive and works on any
-Effect, so you can nest by your own concepts rather than only by procedure.
-It is not called a scope because Effect's `Scope` is about resource lifetime;
+Effect, so you can nest by your own concepts rather than only by procedure. It
+is not called a scope because Effect's `Scope` is about resource lifetime;
 this is only about attribution.
 
 Because replay is a layer, an entire `invoke` — the routing decision *and*
@@ -1004,7 +1104,8 @@ Effect Match = control flow over facts
 Discern      = control flow over uncertain semantic observations
 ```
 
-That makes Discern a useful base for higher-level Effect procedures / Stanley-style workflows without making Discern itself a workflow framework.
+That makes Discern a useful base for higher-level Effect procedures /
+Stanley-style workflows without making Discern itself a workflow framework.
 
 ## License
 
