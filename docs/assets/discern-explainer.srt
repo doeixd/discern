@@ -1,0 +1,139 @@
+1
+00:00:00,367 --> 00:00:11,379
+Start with Jev, TypeSafe's AI model for focused judgments. You give it context and a question. It returns a typed answer that your code can use.
+
+2
+00:00:12,000 --> 00:00:22,008
+Here is the change we will follow: remove a deprecated retry field. Give Jev the summary and diff, and ask whether this change will cause a regression.
+
+3
+00:00:22,633 --> 00:00:35,701
+Suppose its answer is point six two: an estimated sixty-two percent probability of a regression. This is an illustrative estimate. It does not tell our application whether to block the release.
+
+4
+00:00:37,067 --> 00:00:50,139
+Jev supports three question types. Noul gives the probability of yes. Choice compares named alternatives. Score places the input along described, ordered levels.
+
+5
+00:00:50,767 --> 00:01:03,214
+For our change, these could mean regression risk, breaking versus compatible, and severity. We define the questions and answer spaces. Jev supplies the judgments.
+
+6
+00:01:04,567 --> 00:01:17,604
+Now bring that capability into Effect, the TypeScript library that runs our program. Effect's Decision describes a question and its answer type. Creating this value does not call Jev.
+
+7
+00:01:18,233 --> 00:01:31,731
+The names in Effect are probability, classify, and rate. The TypeSafe adapter maps them to Jev's Noul, Choice, and Score. These are two vocabularies for the same kinds of questions.
+
+8
+00:01:33,100 --> 00:01:44,682
+DecisionModel is the service that actually answers those questions. We pass it an input and our decision definitions. A TypeSafe provider connects this service to Jev.
+
+9
+00:01:45,300 --> 00:01:59,937
+The answer comes back as typed data: risk, probability, point six two. Decision defines what to ask; DecisionModel supplies the answer. Discern can use other DecisionModel providers too.
+
+10
+00:02:01,300 --> 00:02:11,103
+We now have a number, but our application needs an action. If we only ask whether risk is at least point eight, point six two becomes false.
+
+11
+00:02:11,733 --> 00:02:23,256
+A fallback might then ship the change. But below our blocking threshold does not mean safe. We need a way to represent the gap between enough evidence for yes and enough for no.
+
+12
+00:02:24,633 --> 00:02:34,611
+Discern adds that interpretation. We declare the same risk question through Discern, then create a pattern with a match threshold and a separate miss threshold.
+
+13
+00:02:35,233 --> 00:02:40,657
+At point nine, this pattern matches: there is enough evidence for high risk.
+
+14
+00:02:41,300 --> 00:02:46,194
+At point two, it misses: the high-risk condition is not met.
+
+15
+00:02:46,833 --> 00:02:57,991
+Our point six two lies between point five and point eight. The result is Uncertain. These thresholds are application policy; they are not chosen by Jev.
+
+16
+00:02:59,367 --> 00:03:12,439
+Now connect those three results to code. When high risk matches, return block. When it is uncertain, return human review. If every rule misses, return ship.
+
+17
+00:03:13,067 --> 00:03:24,804
+Follow our change: point six two makes the first rule uncertain, so human review runs. Evaluation stops there. The ship fallback is never reached.
+
+18
+00:03:25,433 --> 00:03:37,915
+This is a deliberately small release policy. Discern makes our thresholds and branches explicit. It does not prove that the model's estimate, or our release policy, is correct.
+
+19
+00:03:39,267 --> 00:03:52,204
+We can add an impact question and combine patterns. First, block changes that are both breaking and high risk. Otherwise, a confidently breaking change can require a migration.
+
+20
+00:03:52,833 --> 00:04:05,510
+Both rules refer to breaking, but Discern asks about impact only once. The required impact and risk questions share one model call for this input. The rules reuse their answers.
+
+21
+00:04:06,133 --> 00:04:15,761
+Order still matters. If the first rule is uncertain, it stops at human review. It does not skip ahead to the migration rule.
+
+22
+00:04:17,133 --> 00:04:27,776
+Our review policy is useful on its own. A Procedure wraps a program with a name, description, and input schema, so it can also be discovered and selected.
+
+23
+00:04:28,400 --> 00:04:39,482
+The request contains an ask and the same change. The review procedure passes that change to our simpler review policy. Its run function is ordinary Effect code.
+
+24
+00:04:40,100 --> 00:04:50,278
+When we already want a review, call run directly. That adds no routing call. The review policy inside still asks the model for risk.
+
+25
+00:04:51,633 --> 00:05:01,961
+Now add an explain procedure, which returns the supplied summary. Put review and explain in a registry. Both accept the same request shape.
+
+26
+00:05:02,600 --> 00:05:15,837
+For the request, is this safe to ship, the registry asks a classification question built from the procedure descriptions. Suppose review receives point nine two, and explain point zero eight.
+
+27
+00:05:16,467 --> 00:05:28,584
+Invoke selects review and passes the original request to its run function. Routing chooses an existing program. Your code supplies the arguments and controls what that program does.
+
+28
+00:05:29,967 --> 00:05:41,394
+Change the ask to, can you look at this. Suppose the scores become point five two and point four eight. Review leads, but that tiny lead is not enough.
+
+29
+00:05:42,033 --> 00:05:57,735
+With the default probability and margin requirements, routing is uncertain. Our explicit handler asks the user to clarify. Neither procedure runs. Without a handler, invocation fails with a routing uncertainty error.
+
+30
+00:05:59,100 --> 00:06:11,252
+For a larger assistant, wrap the change registry as a code procedure. Place code alongside help in a top-level registry. A registry can now route into another registry.
+
+31
+00:06:11,900 --> 00:06:25,282
+Follow the original request again. The first routing judgment chooses code. The second chooses review. The selected review program asks for risk and returns human review for point six two.
+
+32
+00:06:25,900 --> 00:06:38,627
+That is three model calls along this illustrated path: two routing classifications and one risk judgment. Each level has a specific job, and uncertainty can stop execution at that level.
+
+33
+00:06:39,267 --> 00:06:54,059
+Known sequences need no extra router: Effect code can call review, then explain. For nested routing, set a depth limit. Record observations to inspect the execution tree or replay those judgments.
+
+34
+00:06:55,433 --> 00:07:07,041
+Jev produces a judgment. Decision describes the question, and DecisionModel connects it to a provider. Discern interprets the evidence and selects an explicit branch.
+
+35
+00:07:07,667 --> 00:07:21,708
+Procedures package programs. Registries choose among them and can nest. Start with one useful question, make its uncertainty policy explicit, then compose the behavior your application needs.

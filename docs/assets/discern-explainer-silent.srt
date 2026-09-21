@@ -1,0 +1,139 @@
+1
+00:00:00,367 --> 00:00:05,510
+Jev is TypeSafe's AI model for focused judgments. Give it context and a question; get a typed answer.
+
+2
+00:00:05,633 --> 00:00:09,919
+Example: remove a deprecated retry field. Ask Jev whether this change will cause a regression.
+
+3
+00:00:10,067 --> 00:00:14,638
+Illustrative answer: 0.62 probability of a regression. Your application still needs to decide what to do.
+
+4
+00:00:15,500 --> 00:00:18,500
+Noul: probability of yes. Choice: named alternatives. Score: ordered levels.
+
+5
+00:00:18,633 --> 00:00:23,205
+For this change: regression risk, API impact, and severity. You define the questions; Jev supplies judgments.
+
+6
+00:00:24,067 --> 00:00:28,638
+Effect's Decision defines a question and its answer type. Creating it does not call the model.
+
+7
+00:00:28,767 --> 00:00:33,052
+The TypeSafe adapter maps Effect's probability, classify, and rate to Jev's Noul, Choice, and Score.
+
+8
+00:00:33,933 --> 00:00:38,505
+DecisionModel sends your questions and input to a provider. Here, the TypeSafe provider connects to Jev.
+
+9
+00:00:38,633 --> 00:00:43,205
+The result is typed evidence. Decision defines the question; DecisionModel answers it. Other providers work too.
+
+10
+00:00:44,067 --> 00:00:47,210
+A simple threshold turns 0.62 into false: it is below 0.80.
+
+11
+00:00:47,333 --> 00:00:52,190
+A fallback might ship. But below the blocking threshold does not mean safe. What about the uncertainty?
+
+12
+00:00:53,067 --> 00:00:57,352
+Discern adds an interpretation: one threshold for Match, another for Miss, and Uncertain between them.
+
+13
+00:00:57,500 --> 00:01:00,500
+0.90 → Match: enough evidence for high risk.
+
+14
+00:01:00,633 --> 00:01:03,633
+0.20 → Miss: the high-risk condition is not met.
+
+15
+00:01:03,767 --> 00:01:07,195
+0.62 → Uncertain: between 0.50 and 0.80. Your policy sets these thresholds.
+
+16
+00:01:08,067 --> 00:01:12,352
+Connect results to actions: Match → block. Uncertain → human-review. All rules miss → ship.
+
+17
+00:01:12,500 --> 00:01:16,214
+Our change takes human-review. The uncertain rule stops evaluation before the ship fallback.
+
+18
+00:01:16,333 --> 00:01:19,762
+This is an example policy. Choose and evaluate thresholds for your application.
+
+19
+00:01:20,633 --> 00:01:25,205
+Combine patterns: breaking AND high risk → block. Otherwise, a confidently breaking change can require migration.
+
+20
+00:01:25,333 --> 00:01:30,476
+Impact appears in both rules but is asked once. Required impact and risk questions share one model call.
+
+21
+00:01:30,600 --> 00:01:34,314
+Order matters: an uncertain first rule stops at human-review, before the migration rule.
+
+22
+00:01:35,167 --> 00:01:38,595
+A Procedure wraps a program with a name, description, and input schema.
+
+23
+00:01:38,733 --> 00:01:43,590
+This procedure passes the request's change to our simpler review policy. Its body is ordinary Effect code.
+
+24
+00:01:43,733 --> 00:01:49,162
+Call run directly when you know what you want. No routing call; the review body still asks for risk.
+
+25
+00:01:50,033 --> 00:01:55,176
+A registry groups procedures with the same input type. Here: review a change or return its supplied summary.
+
+26
+00:01:55,300 --> 00:01:59,014
+The registry classifies intent using procedure descriptions. This clear request strongly favors review.
+
+27
+00:01:59,133 --> 00:02:04,276
+Invoke selects review and passes the original request to run. Your code supplies arguments and performs the work.
+
+28
+00:02:05,133 --> 00:02:09,990
+A vague request produces a near tie. The highest score alone does not justify running a procedure.
+
+29
+00:02:10,133 --> 00:02:13,562
+Neither threshold is met. Our onUncertain handler requests clarification; neither procedure runs.
+
+30
+00:02:14,433 --> 00:02:18,433
+Wrap a registry as a procedure with fromRegistry. Then place it inside another registry.
+
+31
+00:02:18,567 --> 00:02:23,138
+Follow the request: assistant selects code, code selects review, and review returns human-review for risk 0.62.
+
+32
+00:02:23,267 --> 00:02:28,124
+Three calls on this path: two routing classifications, then one risk judgment. Uncertainty can stop any level.
+
+33
+00:02:28,267 --> 00:02:32,838
+Compose known sequences directly in Effect. Limit nested routing depth; record observations to inspect and replay.
+
+34
+00:02:33,700 --> 00:02:38,557
+Jev judges. Decision defines the question. DecisionModel asks a provider. Discern interprets evidence and selects a branch.
+
+35
+00:02:38,700 --> 00:02:42,986
+Procedures package programs. Registries select and compose them. Start with one question, then build up.

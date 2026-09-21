@@ -2,15 +2,15 @@
 
 **Uncertainty-aware semantic pattern matching for Effect.**
 
-[![Tutorial preview: Jev receives a code change and a question, then returns an estimated regression probability. Click to watch the narrated lesson.](docs/assets/discern-explainer.gif)](docs/assets/discern-explainer.mp4)
+[![Silent tutorial preview: Jev receives a code change and a question, then returns an estimated regression probability. Click to watch the full explanation.](https://raw.githubusercontent.com/doeixd/discern/main/docs/assets/discern-explainer-silent.gif)](https://github.com/doeixd/discern/blob/main/docs/assets/discern-explainer-silent.mp4)
 
-[Watch the narrated tutorial](docs/assets/discern-explainer.mp4) · [Read the
-transcript](docs/animation/transcript.md) · [Manim
-source](docs/animation/README.md)
+[Watch the silent tutorial](https://github.com/doeixd/discern/blob/main/docs/assets/discern-explainer-silent.mp4) · [Read the
+explanation](https://github.com/doeixd/discern/blob/main/docs/animation/transcript-silent.md) · [Manim
+source](https://github.com/doeixd/discern/blob/main/docs/animation/README.md)
 
 Follow one code change through **Jev → Effect Decision / DecisionModel →
 Discern → Procedures → nested registries**. The image previews the opening;
-the full video includes narration and captions.
+the full video uses brief on-screen explanations, with no audio.
 
 Effect v4 has `Decision` / `DecisionModel`: provider-neutral semantic
 observations such as classification, probability and ordered rating. Discern

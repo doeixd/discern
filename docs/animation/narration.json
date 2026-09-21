@@ -22,7 +22,8 @@
   ]},
   {"id":"pattern", "title":"Discern turns evidence into a pattern", "cues":[
     "Discern adds that interpretation. We declare the same risk question through Discern, then create a pattern with a match threshold and a separate miss threshold.",
-    "At point nine, this pattern matches: there is enough evidence for high risk. At point two, it misses: the high-risk condition is not met.",
+    "At point nine, this pattern matches: there is enough evidence for high risk.",
+    "At point two, it misses: the high-risk condition is not met.",
     "Our point six two lies between point five and point eight. The result is Uncertain. These thresholds are application policy; they are not chosen by Jev."
   ]},
   {"id":"policy", "title":"A policy turns pattern results into actions", "cues":[

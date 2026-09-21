@@ -6,12 +6,15 @@
 import json
 from pathlib import Path
 import re
+import sys
 import textwrap
 import wave
 from manim import *
 
 ROOT = Path(__file__).resolve().parent
-STORY = json.loads((ROOT / "narration.json").read_text(encoding="utf-8"))
+SILENT = "--silent" in sys.argv
+STEM = "discern-explainer-silent" if SILENT else "discern-explainer"
+STORY = json.loads((ROOT / ("silent-captions.json" if SILENT else "narration.json")).read_text(encoding="utf-8"))
 SOURCE = (ROOT.parent.parent / "examples/explainer.ts").read_text(encoding="utf-8")
 BG, PANEL = "#0C1220", "#172338"
 INK, MUTED = "#EEF3FF", "#A7B5CD"
@@ -69,8 +72,12 @@ class DiscernExplainer(Scene):
     def say(self, *animations, run_time=.8):
         line = self.chapter["cues"][self.cue]
         audio = ROOT / "media/audio" / f'{self.chapter["id"]}-{self.cue}.wav'
-        with wave.open(str(audio)) as wav:
-            duration = wav.getnframes() / wav.getframerate()
+        if SILENT:
+            # Readable short holds, including time to scan the accompanying diagram.
+            duration = max(3.0, len(line.split()) / 3.5)
+        else:
+            with wave.open(str(audio)) as wav:
+                duration = wav.getnframes() / wav.getframerate()
         if self.subtitle is not None:
             self.remove(self.subtitle)
         self.subtitle = text(textwrap.fill(line, width=105), 21).move_to(DOWN*3.18)
@@ -80,11 +87,12 @@ class DiscernExplainer(Scene):
         self.add(self.subtitle)
         self.timeline.append({"chapter":self.chapter["id"],"title":self.chapter["title"],
                               "cue":self.cue,"start":self.time,"end":self.time+duration,"text":line})
-        self.add_sound(str(audio))
+        if not SILENT:
+            self.add_sound(str(audio))
         start = self.time
         if animations:
             self.play(*animations, run_time=run_time)
-        self.wait(max(.1, duration+.65-(self.time-start)))
+        self.wait(max(.1, duration+(.15 if SILENT else .65)-(self.time-start)))
         self.cue += 1
 
     def construct(self):
@@ -119,9 +127,9 @@ class DiscernExplainer(Scene):
         definition = code("decision",29).move_to(UP*.9)
         note = text("A definition is data. No model call yet.",25,AMBER).move_to(DOWN*.25)
         self.say(FadeIn(definition),FadeIn(note))
-        mapping = VGroup(text("Effect",21,MUTED),text("probability     classify       rate",27,BLUE,True),
-                         text("↓                   ↓                ↓",24,MUTED),
-                         text("Noul            Choice        Score",27,TEAL,True)).arrange(DOWN,buff=.15).move_to(DOWN*1.35)
+        mapping = VGroup(*[VGroup(text(a,27,BLUE,True),text("↓",24,MUTED),text(b,27,TEAL,True))
+                           .arrange(DOWN,buff=.15).move_to([x,-1.4,0])
+                           for a,b,x in [("probability","Noul",-4),("classify","Choice",0),("rate","Score",4)]])
         self.say(FadeIn(mapping))
 
         self.begin(3,1)
@@ -154,11 +162,11 @@ class DiscernExplainer(Scene):
                         text("Match",24,TEAL).move_to([4.32,-1.2,0]))
         ticks = VGroup(*[text(s,18,MUTED,True).move_to([-5.4+v*10.8,-1.7,0])
                         for v,s in [(0,"0"),(.5,"0.50"),(.8,"0.80"),(1,"1")]])
-        dot = Dot([4.32,-.65,0],color=INK)
+        dot = Dot([4.32,-.65,0],radius=.11,color=INK).set_z_index(3)
         number = text("0.90 → Match",24,TEAL).move_to(UP*-.15)
-        self.say(Create(zones),FadeIn(labels),FadeIn(ticks),FadeIn(dot),FadeIn(number),
-                 Succession(Wait(3),dot.animate.move_to([-3.24,-.65,0]),
-                            Transform(number,text("0.20 → Miss",24,BLUE).move_to(UP*-.15))),run_time=7)
+        self.say(Create(zones),FadeIn(labels),FadeIn(ticks),FadeIn(dot),FadeIn(number))
+        self.say(dot.animate.move_to([-3.24,-.65,0]),
+                 Transform(number,text("0.20 → Miss",24,BLUE).move_to(UP*-.15)))
         self.say(dot.animate.move_to([1.296,-.65,0]),
                  Transform(number,text("0.62 → Uncertain",24,AMBER).move_to(UP*-.15)))
 
@@ -221,9 +229,9 @@ class DiscernExplainer(Scene):
         path = VGroup(SurroundingRectangle(top,color=TEAL,buff=.06),
                       SurroundingRectangle(group,color=TEAL,buff=.06),
                       SurroundingRectangle(review,color=TEAL,buff=.06))
-        verdict = text("risk = 0.62 → human-review",27,AMBER).move_to(DOWN*1.95)
+        verdict = text("risk = 0.62 → human-review",27,AMBER).move_to(DOWN*2.15)
         self.say(LaggedStart(*[Create(p) for p in path],lag_ratio=.9),FadeIn(verdict),run_time=3.5)
-        calls = text("1  choose code       2  choose review       3  judge risk",22,BLUE,True).move_to(DOWN*1.35)
+        calls = text("1  choose code       2  choose review       3  judge risk",22,BLUE,True).move_to(DOWN*1.55)
         self.say(FadeIn(calls))
         composition = VGroup(text("Known sequence: review.run → explain.run",27,TEAL,True),
                              text("Nested routing: withMaxDepth(4)",27,BLUE,True),
@@ -240,15 +248,16 @@ class DiscernExplainer(Scene):
         self.say(LaggedStart(*[FadeIn(l) for l in layers[:3]],lag_ratio=.3))
         self.say(FadeIn(layers[3]))
         self.wait(1)
-        (ROOT / "media/timeline.json").write_text(json.dumps(self.timeline,indent=2),encoding="utf-8")
+        timeline_name = "timeline-silent.json" if SILENT else "timeline.json"
+        (ROOT / "media" / timeline_name).write_text(json.dumps(self.timeline,indent=2),encoding="utf-8")
 
 
 if __name__ == "__main__":
     missing = [f'{c["id"]}-{i}.wav' for c in STORY for i in range(len(c["cues"]))
                if not (ROOT / "media/audio" / f'{c["id"]}-{i}.wav').exists()]
-    if missing:
+    if missing and not SILENT:
         raise SystemExit("Generate narration first: powershell -File docs/animation/narrate.ps1")
     with tempconfig({"pixel_width":1280,"pixel_height":720,"frame_rate":30,
-                     "media_dir":str(ROOT / "media"),"output_file":"discern-explainer",
+                     "media_dir":str(ROOT / "media"),"output_file":STEM,
                      "disable_caching":True}):
         DiscernExplainer().render()
