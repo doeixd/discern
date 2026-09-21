@@ -62,3 +62,23 @@ const immediate = Discern.value(Schema.String, "change").pipe(
   Discern.orElse((input) => input),
 );
 void immediate;
+
+// --- DecisionModel middleware -------------------------------------------------
+
+const observations = Discern.Model.store();
+const spend = Discern.Model.budget({ decisions: 20, calls: 4 });
+
+void Discern.Model.layer(Discern.Model.unavailable, [
+  Discern.Model.recording(observations),
+  Discern.Model.caching(observations),
+  Discern.Model.budgeted(spend),
+]);
+
+void Discern.Model.replayLayer(observations.snapshot());
+
+// Replay accepts either a snapshot or a live store, and drops DecisionModel from R.
+void matcher.replay("change", observations.snapshot());
+void matcher.replay("change", observations);
+
+const asPolicy: Discern.Policy<string, string | number | boolean, never, never, typeof Schema.String> = matcher;
+void asPolicy;

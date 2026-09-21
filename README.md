@@ -330,50 +330,114 @@ Discern also fingerprints the actual decision definition. Reusing one ID for two
 
 Without an explicit ID, Discern derives one from the decision definition.
 
-## Trace and replay
+## Observations, recording and replay
 
-Reusable matchers completed with `orElse` return callable `Program`s:
+Every semantic observation in Discern funnels through one `DecisionModel` call.
+So recording, replay, caching and budgets are not matcher features — they are
+**decorators of the service**, and they apply to any Effect program that
+reaches a `DecisionModel`, including code that never mentions Discern.
 
 ```ts
-const review = Discern.type(Change).pipe(
-  Discern.when(risk.above(0.8), block),
-  Discern.orElse(ship)
-)
+const observations = Discern.Model.store()
 
+const model = anyDecisionModelLayer.pipe(
+  Discern.Model.intercept([
+    Discern.Model.recording(observations),
+    Discern.Model.caching(observations),
+    Discern.Model.budgeted(Discern.Model.budget({ decisions: 20 }))
+  ])
+)
+```
+
+`intercept` decorates *any* `DecisionModel` layer, including one from a provider
+package you do not own. Interceptors are listed outermost-first, so above: the
+recorder sees every answer, the cache is consulted next, and only genuine model
+calls draw from the budget.
+
+Observations are **content-addressed** by the decision definition together with
+the encoded input:
+
+```text
+address = hash({ decision, state })
+```
+
+which has a few consequences worth knowing:
+
+- A recording and a cache are the **same data structure**. There is no separate
+  cache key to write, and no key function to get wrong.
+- The same decision asked about two different inputs gets two entries, so one
+  store can span many matchers and many inputs without collisions.
+- If a decision's instructions or criteria change, its address changes, so a
+  stale answer is simply absent rather than silently reused.
+
+`Observations` are plain JSON. Snapshot them for a bug report or a regression
+test:
+
+```ts
+const snapshot = observations.snapshot()
+```
+
+Replay reruns the program against those recorded answers and never reaches a
+model:
+
+```ts
+const value = yield* review.replay(change, snapshot)
+```
+
+Handlers still execute. Replay removes semantic nondeterminism; it does not
+memoize your Effect program, so side effects are not accidentally skipped.
+
+Because replay is a layer, a program made of *several* policies plus ordinary
+Effect code replays as a whole:
+
+```ts
+const program = (input: Change) =>
+  Effect.gen(function* () {
+    const risk = yield* riskPolicy(input)
+    const urgency = yield* urgencyPolicy(input)
+    return decide(risk, urgency)
+  })
+
+yield* program(change).pipe(
+  Effect.provide(Discern.Model.replayLayer(snapshot))
+)
+```
+
+Caching is partial for the same reason: a batch of four decisions with three
+already known sends exactly one decision onward.
+
+## Traces
+
+A trace is separate, and answers a different question — not "what did the model
+say?" but "what did this matcher *do* with it?"
+
+```ts
 const { value, trace } = yield* review.runWithTrace(change)
 ```
 
-A trace records:
+It records each evaluated case and its `Match | Miss | Uncertain` status, the
+selected case or fallback, the plan fingerprint, and the raw answers by decision
+id. Use it for diagnostics; use `Observations` to replay.
 
-- decision fingerprints and answers
-- each evaluated case and its `Match | Miss | Uncertain` status
-- the selected case / fallback
-- the plan fingerprint
+## Budgets
 
-Replay uses those semantic observations without calling the model:
-
-```ts
-const valueAgain = yield* review.replay(change, trace)
-```
-
-Handlers still execute. Replay removes semantic nondeterminism; it does not memoize your Effect program.
-
-That is useful for bug reports, regression tests and reproducing agent behavior.
-
-## Semantic observation caching
-
-For the same reason, Discern caches **traces**, not final handler results:
+`budgeted` refuses model calls past a limit and reports what was spent:
 
 ```ts
-const cachedReview = Discern.cached(review, {
-  cache: Discern.memoryCache(),
-  key: change => change.id
-})
+const spend = Discern.Model.budget({ decisions: 20, calls: 4 })
+
+// ... run the program under `Discern.Model.budgeted(spend)` ...
+
+spend.spent() // => { decisions: 12, calls: 3 }
 ```
 
-On a cache hit, Discern replays the semantic answers and reruns the ordinary handlers. Side effects are therefore not accidentally skipped.
+Failures cross the `DecisionModel` boundary as `AiError`, so Discern ships
+predicates rather than asking you to match on shapes:
 
-`TraceCache` is a tiny interface, so a persistent cache can be supplied by the application.
+```ts
+Discern.Model.isBudgetExceeded(error)
+Discern.Model.isReplayMiss(error)
+```
 
 ## Evaluation and calibration
 
@@ -441,7 +505,14 @@ const program = review(change).pipe(
 )
 ```
 
-Any other Effect `DecisionModel` can run the same Discern program.
+Any other Effect `DecisionModel` can run the same Discern program, and
+`Discern.Model.intercept` decorates it without the provider package knowing:
+
+```ts
+const model = TypeSafeDecisionModel.layer({ model: "jev-latest" }).pipe(
+  Discern.Model.intercept([Discern.Model.recording(observations)])
+)
+```
 
 ## Mental model
 

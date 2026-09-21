@@ -10,6 +10,11 @@ import type * as Schema from "effect/Schema";
 import * as AiError from "effect/unstable/ai/AiError";
 import * as Decision from "effect/unstable/ai/Decision";
 import * as DecisionModel from "effect/unstable/ai/DecisionModel";
+import { decisionFingerprint, hash } from "./internal/hash.js";
+import * as Model from "./model.js";
+
+export * as Model from "./model.js";
+export type { Observation, ObservationStore, Observations } from "./model.js";
 
 // -------------------------------------------------------------------------------------------------
 // Utilities
@@ -17,35 +22,7 @@ import * as DecisionModel from "effect/unstable/ai/DecisionModel";
 
 const DecisionNodeTypeId: unique symbol = Symbol.for("discern/DecisionNode");
 const PatternTypeId: unique symbol = Symbol.for("discern/Pattern");
-const ProgramTypeId: unique symbol = Symbol.for("discern/Program");
-
-const stable = (value: unknown): string => {
-  if (value === undefined) return "undefined";
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
-    .join(",")}}`;
-};
-
-/**
- * Two independently seeded FNV-1a lanes, concatenated. Fingerprints gate replay
- * and cache reuse, so 32 bits is not enough margin to treat a match as proof
- * that a decision definition is unchanged.
- */
-const hash = (value: unknown): string => {
-  const input = typeof value === "string" ? value : stable(value);
-  let a = 0x811c9dc5;
-  let b = 0x9e3779b9;
-  for (let i = 0; i < input.length; i++) {
-    const code = input.charCodeAt(i);
-    a = Math.imul(a ^ code, 0x01000193);
-    b = Math.imul(b ^ code, 0x85ebca6b);
-  }
-  return `${(a >>> 0).toString(36)}${(b >>> 0).toString(36).padStart(7, "0")}`;
-};
+const PolicyTypeId: unique symbol = Symbol.for("discern/Policy");
 
 const pipe = (self: unknown, fns: ReadonlyArray<(value: any) => any>): any => {
   let out = self;
@@ -142,14 +119,6 @@ export class UncertainMatchError extends Error {
   }
 }
 
-export class ReplayMismatchError extends Error {
-  readonly _tag = "ReplayMismatchError";
-  override readonly name = "ReplayMismatchError";
-  constructor(message: string) {
-    super(message);
-  }
-}
-
 export class ExhaustiveMatchError extends Error {
   readonly _tag = "ExhaustiveMatchError";
   override readonly name = "ExhaustiveMatchError";
@@ -158,7 +127,7 @@ export class ExhaustiveMatchError extends Error {
   }
 }
 
-export type DiscernError = UncertainMatchError | ReplayMismatchError | ExhaustiveMatchError;
+export type DiscernError = UncertainMatchError | ExhaustiveMatchError;
 
 // -------------------------------------------------------------------------------------------------
 // Decisions
@@ -192,8 +161,6 @@ export interface DecisionNode<Input, D extends AnyDecision, S extends Schema.Con
 }
 
 type AnyDecisionNode = DecisionNode<any, AnyDecision, Schema.Constraint | undefined>;
-
-const decisionFingerprint = (value: AnyDecision): string => `df_${hash(value)}`;
 
 const makeDecisionNode = <Input, D extends AnyDecision, S extends Schema.Constraint | undefined>(
   value: D,
@@ -780,31 +747,31 @@ export const compile = (self: AnyMatcher): CompiledPlan => {
 export const inspect = (value: AnyMatcher | CompiledPlan): CompiledPlan =>
   ("version" in value ? value : compile(value as AnyMatcher));
 
-export interface TraceDecision {
-  readonly fingerprint: string;
-  readonly answer: unknown;
-}
-
 export interface CaseTrace {
   readonly id: string;
   readonly status: PatternStatus;
   readonly reason?: string | undefined;
 }
 
+/**
+ * What a matcher did, for diagnostics: which cases were evaluated, how each one
+ * resolved, and which branch ran.
+ *
+ * A trace is *not* what you replay from. Replay is driven by
+ * {@link Model.Observations}, which are content-addressed and span a whole
+ * program rather than a single matcher. Collect them with
+ * {@link Model.recording}.
+ */
 export interface Trace {
-  readonly version: 1;
+  readonly version: 2;
   readonly planFingerprint: string;
-  readonly decisions: Readonly<Record<string, TraceDecision>>;
+  /** Raw semantic answers keyed by decision id, for reading the trace. */
+  readonly answers: Readonly<Record<string, unknown>>;
   readonly cases: ReadonlyArray<CaseTrace>;
   readonly selected:
     | { readonly _tag: "Case"; readonly id: string }
     | { readonly _tag: "Fallback" }
     | { readonly _tag: "Uncertain"; readonly id: string };
-}
-
-interface RuntimeObservation {
-  readonly answers: AnswerLookup;
-  readonly traceDecisions: Readonly<Record<string, TraceDecision>>;
 }
 
 const buildDefinition = <S extends Schema.Constraint>(schema: S, nodes: ReadonlyArray<AnyDecisionNode>) => {
@@ -828,38 +795,13 @@ const observe = <I, S extends Schema.Constraint>(
   schema: S,
   nodes: ReadonlyArray<AnyDecisionNode>,
   input: I,
-): Effect.Effect<RuntimeObservation, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> => {
-  if (nodes.length === 0) return Effect.succeed({ answers: {}, traceDecisions: {} }) as any;
+): Effect.Effect<AnswerLookup, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> => {
+  if (nodes.length === 0) return Effect.succeed({}) as any;
   const definition = buildDefinition(schema, nodes);
-  return Effect.map(DecisionModel.decide(definition, { input: input as S["Type"] }), ({ answers }) => {
-    const traceDecisions: Record<string, TraceDecision> = Object.create(null);
-    for (const node of nodes) traceDecisions[node.id] = { fingerprint: node.fingerprint, answer: answers[node.id] };
-    return { answers, traceDecisions };
-  }) as any;
-};
-
-const observeFromTrace = (
-  plan: CompiledPlan,
-  nodes: ReadonlyArray<AnyDecisionNode>,
-  trace: Trace,
-): RuntimeObservation | ReplayMismatchError => {
-  if (trace.planFingerprint !== plan.fingerprint) {
-    return new ReplayMismatchError(
-      `Trace was recorded for ${trace.planFingerprint}, but current plan is ${plan.fingerprint}`,
-    );
-  }
-  const answers: Record<string, unknown> = Object.create(null);
-  const traceDecisions: Record<string, TraceDecision> = Object.create(null);
-  for (const node of nodes) {
-    const record = trace.decisions[node.id];
-    if (record === undefined) return new ReplayMismatchError(`Trace is missing decision "${node.id}"`);
-    if (record.fingerprint !== node.fingerprint) {
-      return new ReplayMismatchError(`Decision "${node.id}" changed since the trace was recorded`);
-    }
-    answers[node.id] = record.answer;
-    traceDecisions[node.id] = record;
-  }
-  return { answers, traceDecisions };
+  return Effect.map(
+    DecisionModel.decide(definition, { input: input as S["Type"] }),
+    ({ answers }) => answers,
+  ) as any;
 };
 
 const dispatch = <I, F>(
@@ -867,7 +809,6 @@ const dispatch = <I, F>(
   input: I,
   answers: AnswerLookup,
   fallback: Handler<I, F>,
-  traceDecisions: Readonly<Record<string, TraceDecision>>,
   plan: CompiledPlan,
 ): Effect.Effect<any, any, any> => {
   const caseTrace: Array<CaseTrace> = [];
@@ -879,9 +820,9 @@ const dispatch = <I, F>(
       return Effect.map(asEffect(item.handler(input)), (value) => ({
         value,
         trace: {
-          version: 1,
+          version: 2,
           planFingerprint: plan.fingerprint,
-          decisions: traceDecisions,
+          answers,
           cases: caseTrace,
           selected: { _tag: "Case", id: item.id },
         } satisfies Trace,
@@ -892,9 +833,9 @@ const dispatch = <I, F>(
         return Effect.map(asEffect(self.uncertainHandler(input, { caseId: item.id, result })), (value) => ({
           value,
           trace: {
-            version: 1,
+            version: 2,
             planFingerprint: plan.fingerprint,
-            decisions: traceDecisions,
+            answers,
             cases: caseTrace,
             selected: { _tag: "Uncertain", id: item.id },
           } satisfies Trace,
@@ -906,9 +847,9 @@ const dispatch = <I, F>(
   return Effect.map(asEffect(fallback(input)), (value) => ({
     value,
     trace: {
-      version: 1,
+      version: 2,
       planFingerprint: plan.fingerprint,
-      decisions: traceDecisions,
+      answers,
       cases: caseTrace,
       selected: { _tag: "Fallback" },
     } satisfies Trace,
@@ -922,38 +863,30 @@ const runWithTraceInternal = <I, S extends Schema.Constraint, F>(
   plan: CompiledPlan = compile(self),
 ): Effect.Effect<any, any, any> => {
   const nodes = nodesNeededForInput(self.cases, input);
-  return Effect.flatMap(observe(self.schema, nodes, input), ({ answers, traceDecisions }) =>
-    dispatch(self, input, answers, fallback, traceDecisions, plan),
+  return Effect.flatMap(observe(self.schema, nodes, input), (answers) =>
+    dispatch(self, input, answers, fallback, plan),
   );
 };
 
-const replayInternal = <I, F>(
-  self: AnyMatcher,
-  input: I,
-  fallback: Handler<I, F>,
-  trace: Trace,
-  plan: CompiledPlan = compile(self),
-): Effect.Effect<any, any, any> => {
-  const nodes = nodesNeededForInput(self.cases, input);
-  const observed = observeFromTrace(plan, nodes, trace);
-  if (observed instanceof ReplayMismatchError) return Effect.fail(observed);
-  return dispatch(self, input, observed.answers, fallback, observed.traceDecisions, plan);
-};
-
-export interface Program<
+/**
+ * A finished, reusable matcher: an ordered set of semantic rules over one input
+ * type, with a fallback. Call it like a function to get an `Effect`.
+ */
+export interface Policy<
   Input,
   Output,
   Error,
   Requirements,
   InputSchema extends Schema.Constraint = Schema.Constraint,
 > {
-  readonly [ProgramTypeId]: typeof ProgramTypeId;
+  readonly [PolicyTypeId]: typeof PolicyTypeId;
   (input: Input): Effect.Effect<
     Output,
     Error | AiError.AiError | UncertainMatchError,
     Requirements | DecisionModel.DecisionModel | InputSchema["EncodingServices"]
   >;
   readonly plan: CompiledPlan;
+  /** Run, and additionally report which cases were evaluated and how each resolved. */
   readonly runWithTrace: (
     input: Input,
   ) => Effect.Effect<
@@ -961,25 +894,45 @@ export interface Program<
     Error | AiError.AiError | UncertainMatchError,
     Requirements | DecisionModel.DecisionModel | InputSchema["EncodingServices"]
   >;
+  /**
+   * Re-run against recorded observations instead of a model. Handlers still
+   * execute; only the semantic nondeterminism is removed.
+   *
+   * Equivalent to providing {@link Model.replayLayer}, which is also how you
+   * replay a larger program that contains several policies.
+   */
   readonly replay: (
     input: Input,
-    trace: Trace,
-  ) => Effect.Effect<Output, Error | DiscernError, Requirements>;
+    observations: Model.Observations | Model.ObservationStore,
+  ) => Effect.Effect<
+    Output,
+    Error | AiError.AiError | UncertainMatchError,
+    Requirements | InputSchema["EncodingServices"]
+  >;
 }
 
-const makeProgram = <I, S extends Schema.Constraint, O, E, R, F>(
+/** @deprecated Renamed to {@link Policy}. */
+export type Program<
+  Input,
+  Output,
+  Error,
+  Requirements,
+  InputSchema extends Schema.Constraint = Schema.Constraint,
+> = Policy<Input, Output, Error, Requirements, InputSchema>;
+
+const makePolicy = <I, S extends Schema.Constraint, O, E, R, F>(
   self: Matcher<I, S, O, E, R, MatcherFlavor>,
   fallback: Handler<I, F>,
-): Program<I, O | EffectSuccess<F>, E | EffectError<F>, R | EffectRequirements<F>, S> => {
+): Policy<I, O | EffectSuccess<F>, E | EffectError<F>, R | EffectRequirements<F>, S> => {
   const plan = compile(self);
   const runWithTrace = (input: I) => runWithTraceInternal(self, input, fallback, plan) as any;
   const fn = ((input: I) => Effect.map(runWithTrace(input) as any, (result: any) => result.value)) as any;
   return Object.assign(fn, {
-    [ProgramTypeId]: ProgramTypeId,
+    [PolicyTypeId]: PolicyTypeId,
     plan,
     runWithTrace,
-    replay: (input: I, trace: Trace) =>
-      Effect.map(replayInternal(self, input, fallback, trace, plan) as any, (result: any) => result.value),
+    replay: (input: I, observations: Model.Observations | Model.ObservationStore) =>
+      Effect.provide(fn(input), Model.replayLayer(observations)),
   });
 };
 
@@ -992,20 +945,20 @@ export type FinishedMatcher<
   F,
   Flavor extends MatcherFlavor,
 > = Flavor extends "type"
-  ? Program<I, O | EffectSuccess<F>, E | EffectError<F>, R | EffectRequirements<F>, S>
+  ? Policy<I, O | EffectSuccess<F>, E | EffectError<F>, R | EffectRequirements<F>, S>
   : Effect.Effect<
       O | EffectSuccess<F>,
       E | EffectError<F> | AiError.AiError | UncertainMatchError,
       R | EffectRequirements<F> | DecisionModel.DecisionModel | S["EncodingServices"]
     >;
 
-/** Complete the matcher with a fallback. For reusable matchers this returns a callable Program. */
+/** Complete the matcher with a fallback. For reusable matchers this returns a callable {@link Policy}. */
 export const orElse = <F extends Handler<any, any>>(fallback: F) =>
   <I, S extends Schema.Constraint, O, E, R, Flavor extends MatcherFlavor>(
     self: Matcher<I, S, O, E, R, Flavor>,
   ): FinishedMatcher<I, S, O, E, R, ReturnType<F>, Flavor> => {
-    const program = makeProgram(self, fallback);
-    return (self.flavor === "type" ? program : program(self.provided as I)) as any;
+    const policy = makePolicy(self, fallback);
+    return (self.flavor === "type" ? policy : policy(self.provided as I)) as any;
   };
 
 export const otherwise = orElse;
@@ -1080,58 +1033,8 @@ export { caseOf as case };
 /** Finish only when every classification label has a handler. */
 export const exhaustive = <I, S extends Schema.Constraint, L extends string, O, E, R>(
   self: ClassificationMatcher<I, S, L, never, O, E, R>,
-): Program<I, O, E | ExhaustiveMatchError, R, S> =>
+): Policy<I, O, E | ExhaustiveMatchError, R, S> =>
   orElse(() => Effect.fail(new ExhaustiveMatchError()))(self.matcher) as any;
-
-// -------------------------------------------------------------------------------------------------
-// Cache
-// -------------------------------------------------------------------------------------------------
-
-export interface TraceCache {
-  readonly get: (key: string) => Trace | undefined;
-  readonly set: (key: string, trace: Trace) => void;
-  readonly delete?: ((key: string) => void) | undefined;
-  readonly clear?: (() => void) | undefined;
-}
-
-export const memoryCache = (): TraceCache => {
-  const values = new Map<string, Trace>();
-  return {
-    get: (key) => values.get(key),
-    set: (key, trace) => void values.set(key, trace),
-    delete: (key) => void values.delete(key),
-    clear: () => values.clear(),
-  };
-};
-
-/**
- * Cache semantic observations, not workflow results. A hit replays the trace,
- * so handlers and their effects still execute normally.
- */
-export const cached = <I, A, E, R, S extends Schema.Constraint>(
-  program: Program<I, A, E, R, S>,
-  options: { readonly cache: TraceCache; readonly key: (input: I) => string },
-): Program<I, A, E, R, S> => {
-  const cacheKey = (input: I) => `${program.plan.fingerprint}:${options.key(input)}`;
-  const runWithTrace = (input: I) => {
-    const key = cacheKey(input);
-    const existing = options.cache.get(key);
-    if (existing !== undefined) {
-      return Effect.map(program.replay(input, existing), (value) => ({ value, trace: existing })) as any;
-    }
-    return Effect.map(program.runWithTrace(input), ({ value, trace }) => {
-      options.cache.set(key, trace);
-      return { value, trace };
-    }) as any;
-  };
-  const fn = ((input: I) => Effect.map(runWithTrace(input) as any, (result: any) => result.value)) as any;
-  return Object.assign(fn, {
-    [ProgramTypeId]: ProgramTypeId,
-    plan: program.plan,
-    runWithTrace,
-    replay: program.replay,
-  });
-};
 
 // -------------------------------------------------------------------------------------------------
 // Evaluation & calibration
@@ -1220,7 +1123,10 @@ const observePattern = <I, S extends Schema.Constraint>(
 ): Effect.Effect<{ readonly result: PatternResult; readonly answers: AnswerLookup }, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> => {
   const attempt = preview(pattern, input);
   if (attempt.resolved !== undefined) return Effect.succeed({ result: attempt.resolved, answers: {} }) as any;
-  return Effect.map(observe(schema, attempt.decisions, input), ({ answers }) => ({ result: pattern.evaluate(input, answers), answers })) as any;
+  return Effect.map(observe(schema, attempt.decisions, input), (answers) => ({
+    result: pattern.evaluate(input, answers),
+    answers,
+  })) as any;
 };
 
 export const Eval = {
@@ -1255,7 +1161,7 @@ export const Eval = {
     const allNodes = distinctDecisions(patterns);
     return Effect.map(
       effectAllSequential(options.examples, (example) =>
-        Effect.map(observe(options.schema, allNodes, example.input), ({ answers }) => ({ example, answers })),
+        Effect.map(observe(options.schema, allNodes, example.input), (answers) => ({ example, answers })),
       ),
       (observed) =>
         options.values.map((value, index) => {
