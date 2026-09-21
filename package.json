@@ -1,0 +1,30 @@
+{
+  "name": "discern",
+  "version": "0.2.0",
+  "description": "Uncertainty-aware semantic pattern matching, tracing and evaluation for Effect DecisionModel.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test test/index.test.mjs",
+    "test:types": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck test/types.ts",
+    "check": "npm run typecheck && npm run test:types && npm test"
+  },
+  "devDependencies": {
+    "effect": "4.0.0-rc.117",
+    "typescript": "^5.8.3"
+  },
+  "peerDependencies": {
+    "effect": ">=4.0.0-rc.116 <5"
+  },
+  "engines": { "node": ">=20" }
+}
