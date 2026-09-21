@@ -1,6 +1,6 @@
 # Discern
 
-**Uncertainty-aware semantic control flow for Effect.**
+**Uncertainty-aware, smart semantic control flow and procedures for Effect.**
 
 Type-safe patterns, policies and routable procedures over Effect's `Decision`
 and `DecisionModel` — where *maybe* is a branch you handle, not a rounding
