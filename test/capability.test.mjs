@@ -266,3 +266,82 @@ test("an id that collides with Object.prototype still routes", async () => {
   const result = await run(code.invoke("x"), routesTo(probabilities));
   assert.equal(result, "odd");
 });
+
+test("registries nest, so each routing decision stays a short question", async () => {
+  const lint = Capability.make({
+    id: "lint",
+    description: "Check style and formatting",
+    input: Request,
+    run: () => Effect.succeed("linted"),
+  });
+
+  // A group of code capabilities, presented to the parent as one entry.
+  const codeGroup = Capability.registry(Request, [find, review], { id: "code-route" });
+  const code = Capability.fromRegistry({
+    id: "code",
+    description: "Anything about reading or reviewing source code",
+    registry: codeGroup,
+  });
+  const top = Capability.registry(Request, [code, lint], { id: "top-route" });
+
+  const calls = [];
+  const model = (options) => {
+    const decisionId = Object.keys(options.decisions)[0];
+    calls.push(decisionId);
+    return routesTo(decisionId === "top-route" ? { code: 0.9, lint: 0.1 } : { find: 0.05, review: 0.95 })(
+      options,
+    );
+  };
+
+  const observations = Model.store();
+  assert.equal(
+    await run(top.invoke("is this diff safe"), model, [Model.recording(observations)]),
+    "reviewed:is this diff safe",
+  );
+  assert.deepEqual(calls, ["top-route", "code-route"], "one decision per level, not one big one");
+
+  const tree = Model.tree(observations.snapshot(), "top");
+  assert.deepEqual(
+    tree.children.map((child) => child.name),
+    ["route", "code"],
+  );
+  assert.deepEqual(
+    tree.children[1].children.map((child) => child.name),
+    ["route"],
+  );
+});
+
+test("nested invocation is bounded by a depth limit", async () => {
+  let registry;
+  const loop = Capability.make({
+    id: "loop",
+    description: "Routes straight back to the registry it belongs to",
+    input: Request,
+    run: (request) => registry.invoke(request),
+  });
+  registry = Capability.registry(Request, [loop, find]);
+
+  let calls = 0;
+  const model = (options) => {
+    calls += 1;
+    return routesTo({ loop: 0.95, find: 0.05 })(options);
+  };
+
+  await assert.rejects(
+    () => run(Capability.withMaxDepth(3)(registry.invoke("x")), model),
+    (error) => {
+      const cause = error?.cause ?? error;
+      return cause?._tag === "DepthExceededError" && cause.limit === 3;
+    },
+  );
+  assert.equal(calls, 3, "routing stops at the limit rather than recursing forever");
+});
+
+test("depth is per-branch, not a running total", async () => {
+  // Two sibling invocations each start from the caller's depth.
+  const codeGroup = Capability.registry(Request, [find, review], { id: "inner" });
+  const model = routesTo({ find: 0.9, review: 0.1 });
+
+  const both = Effect.all([codeGroup.invoke("a"), codeGroup.invoke("b")]);
+  assert.deepEqual(await run(Capability.withMaxDepth(1)(both), model), ["found:a", "found:b"]);
+});

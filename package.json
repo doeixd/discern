@@ -37,7 +37,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test test/index.test.mjs test/capability.test.mjs",
     "test:types": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck test/types.ts",
-    "check": "npm run typecheck && npm run test:types && npm test"
+    "check": "npm run typecheck && npm run test:types && npm test",
+    "example": "npm run build && node examples/walkthrough.mjs"
   },
   "devDependencies": {
     "effect": "4.0.0-rc.117",

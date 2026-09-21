@@ -70,6 +70,15 @@ npm run check
 
 `effect` is a peer dependency (`>=4.0.0-rc.116 <5`).
 
+There is a runnable tour in `examples/walkthrough.mjs`:
+
+```bash
+npm run example
+```
+
+It uses a stub provider, so it is deterministic and costs nothing, and it
+exercises uncertainty, recording, replay, budgets and routing end to end.
+
 ## Why not just `if (await model(...))`?
 
 Because semantic evidence is not always boolean.
@@ -630,6 +639,37 @@ const dependencyReview = Capability.make({
 Static composition where you know the shape; routing only where you genuinely
 do not. This is also why Discern is a router and a policy engine rather than a
 tool-calling agent: the model picks, your code constructs.
+
+### Registries nest
+
+A flat classification gets vague past roughly eight members: the criteria grow
+into a long prompt and the probabilities spread thin. A registry can be
+presented as a capability, so grouping is just membership:
+
+```ts
+const codeGroup = Capability.registry(Request, [find, review, testGaps])
+
+const code = Capability.fromRegistry({
+  id: "code",
+  description: "Anything about reading or reviewing source code",
+  registry: codeGroup
+})
+
+const top = Capability.registry(Request, [code, lint, deploy])
+```
+
+Each level is a short, sharp question rather than one wide one.
+
+Because a capability can route, routing can recurse. `invoke` counts nesting
+depth and refuses past a ceiling:
+
+```ts
+program.pipe(Capability.withMaxDepth(4))
+```
+
+The default is 8, and a program that reaches it fails with
+`DepthExceededError`. Only `invoke` is counted — a capability calling another
+capability's `run` directly is bounded by the code that does it.
 
 ### Execution trees
 

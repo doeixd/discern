@@ -14,6 +14,7 @@
  * accepts the registry's input type. Capabilities with different inputs compose
  * statically, through ordinary Effect code.
  */
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type * as AiError from "effect/unstable/ai/AiError";
@@ -110,6 +111,37 @@ export interface RouteOptions {
   readonly minProbability?: number;
   /** The leader must beat the runner-up by this much. Defaults to 0.15. */
   readonly minMargin?: number;
+}
+
+/**
+ * How many nested `invoke` calls deep the current program is. Static `run`
+ * calls are bounded by the code that makes them; only routing can recurse
+ * without a fixed bottom, so only routing is counted.
+ */
+export const CurrentDepth = Context.Reference<number>("discern/CapabilityDepth", {
+  defaultValue: () => 0,
+});
+
+/** The ceiling `invoke` enforces. Defaults to 8. */
+export const MaxDepth = Context.Reference<number>("discern/CapabilityMaxDepth", {
+  defaultValue: () => 8,
+});
+
+/** Set the nested-`invoke` ceiling for a program. */
+export const withMaxDepth =
+  (limit: number) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.provideService(effect, MaxDepth, limit);
+
+export class DepthExceededError extends Error {
+  readonly _tag = "DepthExceededError";
+  override readonly name = "DepthExceededError";
+  constructor(
+    readonly depth: number,
+    readonly limit: number,
+  ) {
+    super(`Capability routing reached depth ${depth}, at the limit of ${limit}`);
+  }
 }
 
 export class RoutingUncertainError extends Error {
@@ -242,7 +274,7 @@ export const registry = <
     });
   };
 
-  const invoke = (input_: S["Type"], invokeOptions: InvokeOptions<S["Type"], any, any> = {}) =>
+  const dispatch = (input_: S["Type"], invokeOptions: InvokeOptions<S["Type"], any, any>) =>
     Effect.flatMap(route(input_, invokeOptions.routing), (result) => {
       if (result._tag === "Matched") {
         return byId.get(result.id)!.run(input_) as Effect.Effect<any, any, any>;
@@ -253,6 +285,15 @@ export const registry = <
       const fallback = invokeOptions.onUncertain(input_, result);
       return Effect.isEffect(fallback) ? fallback : Effect.succeed(fallback);
     });
+
+  const invoke = (input_: S["Type"], invokeOptions: InvokeOptions<S["Type"], any, any> = {}) =>
+    Effect.flatMap(CurrentDepth.useSync((depth) => depth), (depth) =>
+      Effect.flatMap(MaxDepth.useSync((limit) => limit), (limit) =>
+        depth >= limit
+          ? Effect.fail(new DepthExceededError(depth, limit))
+          : Effect.provideService(dispatch(input_, invokeOptions), CurrentDepth, depth + 1),
+      ),
+    );
 
   return {
     input,
@@ -270,3 +311,41 @@ export const registry = <
     invoke,
   } as Registry<Members, S>;
 };
+
+/**
+ * Present a registry as a capability, so registries nest.
+ *
+ * A flat classification gets vague past roughly eight members: the criteria
+ * grow into a long prompt and the probabilities spread thin. Grouping related
+ * capabilities behind one entry keeps each routing decision a short, sharp
+ * question, and nothing new is needed to do it — a registry-as-capability is
+ * just another member of its parent.
+ */
+export const fromRegistry = <
+  const Id extends string,
+  S extends Schema.Constraint,
+  const Members extends ReadonlyArray<Capability<string, S["Type"], any, any, any, S>>,
+>(options: {
+  readonly id: Id;
+  readonly description: string;
+  readonly examples?: ReadonlyArray<string>;
+  readonly registry: Registry<Members, S>;
+  readonly routing?: RouteOptions;
+}): Capability<
+  Id,
+  S["Type"],
+  OutputOf<Members[number]>,
+  ErrorOf<Members[number]> | AiError.AiError | RoutingUncertainError | DepthExceededError,
+  RequirementsOf<Members[number]> | DecisionModel.DecisionModel | S["EncodingServices"],
+  S
+> =>
+  make({
+    id: options.id,
+    description: options.description,
+    ...(options.examples === undefined ? undefined : { examples: options.examples }),
+    input: options.registry.input,
+    run: (input) =>
+      options.registry.invoke(input, {
+        ...(options.routing === undefined ? undefined : { routing: options.routing }),
+      }) as Effect.Effect<any, any, any>,
+  }) as any;
