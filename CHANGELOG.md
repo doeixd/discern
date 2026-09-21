@@ -2,6 +2,53 @@
 
 This project is pre-1.0 and the API still moves between minor versions.
 
+## 0.4.0
+
+Registries learned to ask less and report more.
+
+### Added
+
+- **`routeBy`** routes on a projection of the input rather than the whole of
+  it. A procedure consumes the entire input; a router only needs enough to
+  choose, so a diff, a document or a transcript no longer reaches the routing
+  prompt. Because observations are content-addressed, the routing answer is now
+  keyed on the projection — the same question about different evidence is a
+  cache hit rather than a second call.
+- **`eligible`** removes a procedure deterministically before the model sees
+  the choices, on the same principle as `Discern.deterministic`
+  short-circuiting a pattern. Narrowing to a single candidate skips the model
+  entirely, reported as `Matched` with `by: "elimination"`.
+- **`invokeWithRoute`** returns the routing decision next to the result, since
+  in an agent the choice is often the interesting telemetry.
+- `Registry.routeInput` exposes the schema the router actually sees.
+
+### Changed
+
+- **`Route` gained a `None` variant.** Eligibility ruling everything out is a
+  deterministic fact, not uncertainty, so it is kept separate: `invoke` fails
+  with `NoEligibleProcedureError` rather than `RoutingUncertainError`. An
+  exhaustive `switch` over `Route` needs a new branch, and `None` carries no
+  `ranked` list.
+- `Matched` gained `by: "model" | "elimination"`.
+- `Registry` gained a third type parameter for the routing input. It defaults
+  to the registry's input, so uses that do not project are unaffected.
+- `registry.decision` is typed by the projection, so evaluating a projected
+  router uses the projected schema and projected examples.
+
+### Documentation
+
+- `Policy` was used throughout and never defined. There is now a section
+  explaining that `Discern.type` starts a matcher, `orElse` finishes it into a
+  callable `Policy`, and what hangs off one — and *matcher* is now reserved for
+  one still being assembled.
+- `classify`'s `{ match, miss, margin }` thresholds are explained, including
+  that `miss` defaults to `match` and that `margin` only bites when `match` is
+  low.
+- Three-valued `and` / `or` are given truth tables.
+- The opening example shows the whole stack, and a before/after against raw
+  `Decision` replaces the abstract argument that preceded it. Both are
+  typechecked as `examples/`.
+
 ## 0.3.0
 
 First published release, as `@doeixd/discern`. The unscoped name `discern` on
@@ -44,14 +91,6 @@ input)`, which makes a recording and a cache the same data structure.
   provider's chosen label, and returns `Uncertain` instead of resolving a
   near-tie. `registry.decision` is an ordinary pattern, so `Discern.Eval`
   measures the router.
-- `routeBy` routes on a projection of the input, so large evidence never
-  reaches the routing prompt and the routing answer is addressed by the
-  question alone.
-- `eligible` removes a procedure deterministically before the model is asked.
-  Narrowing to one candidate skips the model (`by: "elimination"`); narrowing
-  to none yields `Route.None` and `NoEligibleProcedureError`, kept separate
-  from uncertainty.
-- `invokeWithRoute` returns the routing decision alongside the result.
 - Registries are homogeneous in input, enforced in the types. `DecisionModel`
   has no structured generation, so routing can select a procedure but never
   construct its input.
