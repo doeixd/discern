@@ -1,5 +1,5 @@
 {
-  "name": "discern",
+  "name": "@doeixd/discern",
   "version": "0.3.0",
   "description": "Uncertainty-aware semantic pattern matching, tracing and evaluation for Effect DecisionModel.",
   "license": "MIT",
@@ -30,6 +30,9 @@
     "dist",
     "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

@@ -14,7 +14,7 @@ Decision / DecisionModel -> Discern
 A normal pattern matches facts you can compute exactly. A Discern pattern matches **semantic evidence** produced by a `DecisionModel`.
 
 ```ts
-import * as Discern from "discern"
+import * as Discern from "@doeixd/discern"
 import { Schema } from "effect"
 
 const OnChange = Discern.on(Schema.String)
@@ -77,20 +77,26 @@ surface can still change between minor versions.
 
 ## Install
 
-Not yet published to npm. For now:
+```bash
+npm install @doeixd/discern effect@rc
+```
+
+`effect` is a peer dependency (`>=4.0.0-rc.116 <5`). Note that `effect@latest`
+is still 3.x, so v4 has to be asked for by tag — installing plain `effect`
+gets you a major version this will not work with.
+
+The unscoped name `discern` on npm belongs to an unrelated 2013 package, which
+is why this one is scoped. The library still calls itself Discern everywhere
+else.
+
+To work on it locally:
 
 ```bash
 git clone https://github.com/doeixd/discern.git
 cd discern
 npm install
 npm run check
-```
-
-`effect` is a peer dependency (`>=4.0.0-rc.116 <5`). Note that `effect@latest`
-is still 3.x, so v4 has to be asked for by tag:
-
-```bash
-npm install effect@rc
+npm run example
 ```
 
 There is a runnable tour in `examples/walkthrough.mjs`:
@@ -557,12 +563,12 @@ const model = TypeSafeDecisionModel.layer({ model: "jev-latest" }).pipe(
 
 ## Procedures
 
-`discern/procedure` is a small layer above Discern: a **procedure** is a
+`@doeixd/discern/procedure` is a small layer above Discern: a **procedure** is a
 named, typed Effect program, and a **registry** picks between several of them
 from a request.
 
 ```ts
-import * as Procedure from "discern/procedure"
+import * as Procedure from "@doeixd/discern/procedure"
 
 const find = Procedure.make({
   id: "find",

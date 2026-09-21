@@ -4,6 +4,9 @@ This project is pre-1.0 and the API still moves between minor versions.
 
 ## 0.3.0
 
+First published release, as `@doeixd/discern`. The unscoped name `discern` on
+npm belongs to an unrelated package from 2013.
+
 Nothing was published before this, so none of the breaking changes below have
 a migration path to honour — they are recorded for the sake of the history.
 
@@ -34,7 +37,7 @@ input)`, which makes a recording and a cache the same data structure.
 
 ### Procedures
 
-- **Added** the `discern/procedure` entry point: `make`, `registry`, `route`,
+- **Added** the `@doeixd/discern/procedure` entry point: `make`, `registry`, `route`,
   `invoke`, `fromRegistry`, `withMaxDepth`, `fromEffect`,
   `RoutingUncertainError`, `DepthExceededError`.
 - Routing reads the whole classification distribution rather than the
