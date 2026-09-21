@@ -120,9 +120,49 @@ const withFallback: Effect.Effect<number | "reviewed" | "escalated", unknown, un
 });
 void withFallback;
 
-// Routing carries the full ranking, keyed by the registry's own ids.
+// Routing carries the full ranking, keyed by the registry's own ids. `None`
+// has no ranking, because eligibility ruled everything out before any model
+// was asked — so it has to be narrowed separately.
 void code.route("x").pipe(
-  Effect.map((route) => (route._tag === "Matched" ? route.id : route.ranked[0]!.id)),
+  Effect.map((route) => {
+    switch (route._tag) {
+      case "Matched":
+        return `${route.id} by ${route.by}`;
+      case "Uncertain":
+        return route.ranked[0]!.id;
+      case "None":
+        return route.reason;
+    }
+  }),
+);
+
+// A projected registry routes on part of its input.
+const Envelope = Schema.Struct({ ask: Schema.String, payload: Schema.String });
+const readIt = Procedure.make({
+  id: "read",
+  description: "Read the payload",
+  input: Envelope,
+  run: (envelope) => Effect.succeed(envelope.payload),
+});
+const countIt = Procedure.make({
+  id: "count",
+  description: "Count the payload",
+  input: Envelope,
+  eligible: (envelope) => envelope.payload.length > 0,
+  run: (envelope) => Effect.succeed(envelope.payload.length),
+});
+const envelopes = Procedure.registry(Envelope, [readIt, countIt], {
+  routeBy: { schema: Schema.String, select: (envelope) => envelope.ask },
+});
+
+// The routing decision is typed by the projection, not the full input.
+const routeDecision: Discern.ClassifyDecision<string, "read" | "count", typeof Schema.String> =
+  envelopes.decision;
+void routeDecision;
+
+// invokeWithRoute surfaces the selection next to the result.
+void envelopes.invokeWithRoute({ ask: "read it", payload: "x" }).pipe(
+  Effect.map(({ route, value }) => (route._tag === "Matched" ? `${route.id}:${String(value)}` : "?")),
 );
 
 // Registries are homogeneous in input: a procedure over a different schema is rejected.

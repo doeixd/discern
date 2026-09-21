@@ -2,6 +2,10 @@
 
 **Uncertainty-aware semantic pattern matching for Effect.**
 
+[![Animated explanation of Discern: batch model evidence, preserve uncertainty, and route to explicit policies and procedures.](docs/assets/discern-explainer.gif)](docs/assets/discern-explainer.mp4)
+
+[Watch the full-quality video](docs/assets/discern-explainer.mp4) · Silent, with on-screen explanations · [Animation source](docs/animation/README.md)
+
 Effect v4 has `Decision` / `DecisionModel`: provider-neutral semantic observations such as classification, probability and ordered rating. Discern turns those observations into **patterns and control flow**.
 
 Think of it as the semantic counterpart to Effect `Match`:
@@ -86,7 +90,12 @@ const explainChange = Procedure.make({
   run: (request) => Effect.succeed(request.change.summary),
 });
 
-const changes = Procedure.registry(Request, [reviewChange, explainChange]);
+// The router only needs the intent, so the diff never reaches the routing
+// prompt — fewer tokens, better signal, and the routing answer is cached per
+// question rather than per question-and-diff.
+const changes = Procedure.registry(Request, [reviewChange, explainChange], {
+  routeBy: { schema: Schema.String, select: (request) => request.ask },
+});
 
 // --- the provider: any Effect DecisionModel, here TypeSafe / Jev ---
 
@@ -145,7 +154,7 @@ library or from the provider packages.
 - **Running it** — [Observations, recording and replay](#observations-recording-and-replay) ·
   [Budgets](#budgets) · [Evaluation and calibration](#evaluation-and-calibration) ·
   [Provider-neutral](#provider-neutral)
-- **Routing** — [Procedures](#procedures)
+- **Routing** — [Procedures](#procedures) · [Route projection](#route-on-only-what-the-router-needs) · [Eligibility](#rule-procedures-out-before-asking)
 - [Mental model](#mental-model) · [License](#license)
 
 ## Status
@@ -828,6 +837,87 @@ const dependencyReview = Procedure.make({
 Static composition where you know the shape; routing only where you genuinely
 do not. This is also why Discern is a router and a policy engine rather than a
 tool-calling agent: the model picks, your code constructs.
+
+### Route on only what the router needs
+
+A procedure consumes the whole input. A router only needs enough of it to
+choose. Without saying so, a registry sends the entire input to the model —
+including a diff, a document or a transcript that has no bearing on which
+procedure applies.
+
+```ts
+const changes = Procedure.registry(Request, [reviewChange, explainChange], {
+  routeBy: { schema: Schema.String, select: request => request.ask }
+})
+```
+
+```text
+full typed input ──────────────────────► chosen procedure
+       │
+       ▼
+  select(request)
+       │
+       ▼
+ "what does this do?" ─────────────────► routing decision
+```
+
+Fewer tokens and better signal, and because observations are content-addressed
+the routing answer is now keyed on the question alone — the same question about
+a different diff reuses it instead of paying again.
+
+`registry.decision` is typed by the projection, so evaluating the router uses
+the projected schema and projected examples.
+
+### Rule procedures out before asking
+
+Semantic routing should not be offered choices ordinary code has already
+eliminated — the same principle as `Discern.deterministic` short-circuiting a
+pattern.
+
+```ts
+const deploy = Procedure.make({
+  id: "deploy",
+  description: "Release the change described by a ticket",
+  input: Ticket,
+  eligible: ticket => ticket.environment !== "local",
+  run: releaseProgram
+})
+```
+
+```text
+all procedures
+      ↓  deterministic eligibility
+possible procedures
+      ↓  semantic classification
+    chosen
+```
+
+Two consequences fall out. Narrowing to a **single** candidate skips the model
+entirely — the route comes back `Matched` with `by: "elimination"`. Narrowing
+to **none** is not uncertainty but a deterministic fact, so it is its own
+outcome:
+
+```ts
+route._tag // "Matched" | "Uncertain" | "None"
+```
+
+`invoke` fails with `NoEligibleProcedureError` on `None`, separately from
+`RoutingUncertainError`, because "nothing applies" and "I cannot tell these
+apart" are different problems with different fixes.
+
+### The route is telemetry
+
+In an agent or a workflow the choice is often as interesting as the result:
+
+```ts
+const { route, value } = yield* changes.invokeWithRoute(request)
+
+route.id          // which procedure ran
+route.probability // how sure the model was
+route.margin      // how far ahead of the runner-up
+route.by          // "model", or "elimination" if it cost nothing
+route.ranked      // every candidate that was considered
+```
 
 ### Registries nest
 

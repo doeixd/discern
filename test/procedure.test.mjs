@@ -18,18 +18,43 @@ const providerOf = (fn) =>
 const run = (effect, fn, interceptors = []) =>
   Effect.runPromise(Effect.provide(effect, Model.layer(providerOf(fn), interceptors)));
 
-/** A router that answers the routing classification with a fixed distribution. */
-const routesTo = (probabilities) => (options) => {
+/**
+ * A router that answers the routing classification from a table of preferences.
+ *
+ * Eligibility can narrow the labels a decision actually carries, so the answer
+ * is restricted to whatever was asked about and renormalised. A table that
+ * already covers exactly those labels is used verbatim, to keep probabilities
+ * exact for assertions.
+ */
+const routesTo = (preferences) => (options) => {
   const answers = {};
   for (const [key, decision] of Object.entries(options.decisions)) {
-    answers[key] =
-      decision._tag === "Classify"
-        ? {
-            _tag: "Classify",
-            label: Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0][0],
-            probabilities,
-          }
-        : { _tag: "Probability", probability: 0.9 };
+    if (decision._tag !== "Classify") {
+      answers[key] = { _tag: "Probability", probability: 0.9 };
+      continue;
+    }
+    const labels = Object.keys(decision.criteria);
+    const exact =
+      Object.keys(preferences).length === labels.length &&
+      labels.every((label) => Object.hasOwn(preferences, label));
+    let probabilities;
+    if (exact) {
+      probabilities = preferences;
+    } else {
+      const weights = labels.map((label) => (Object.hasOwn(preferences, label) ? preferences[label] : 0));
+      const total = weights.reduce((sum, weight) => sum + weight, 0);
+      probabilities = Object.fromEntries(
+        labels.map((label, index) => [
+          label,
+          total === 0 ? 1 / labels.length : weights[index] / total,
+        ]),
+      );
+    }
+    const label = labels.reduce(
+      (best, candidate) => (probabilities[candidate] > probabilities[best] ? candidate : best),
+      labels[0],
+    );
+    answers[key] = { _tag: "Classify", label, probabilities };
   }
   return answers;
 };
@@ -344,4 +369,168 @@ test("depth is per-branch, not a running total", async () => {
 
   const both = Effect.all([codeGroup.invoke("a"), codeGroup.invoke("b")]);
   assert.deepEqual(await run(Procedure.withMaxDepth(1)(both), model), ["found:a", "found:b"]);
+});
+
+// -------------------------------------------------------------------------------------------------
+// Routing projection, eligibility and route telemetry
+// -------------------------------------------------------------------------------------------------
+
+const Ticket = Schema.Struct({
+  ask: Schema.String,
+  environment: Schema.String,
+  evidence: Schema.String,
+});
+
+const ticket = (ask, environment = "production", evidence = "a very large blob") => ({
+  ask,
+  environment,
+  evidence,
+});
+
+const inspect = Procedure.make({
+  id: "inspect",
+  description: "Look at what a ticket is about",
+  input: Ticket,
+  run: (request) => Effect.succeed(`inspected:${request.ask}`),
+});
+
+const deploy = Procedure.make({
+  id: "deploy",
+  description: "Release the change described by a ticket",
+  input: Ticket,
+  eligible: (request) => request.environment !== "local",
+  run: (request) => Effect.succeed(`deployed:${request.environment}`),
+});
+
+const escalate = Procedure.make({
+  id: "escalate",
+  description: "Hand the ticket to a human",
+  input: Ticket,
+  run: () => Effect.succeed("escalated"),
+});
+
+const rollback = Procedure.make({
+  id: "rollback",
+  description: "Undo the last release",
+  input: Ticket,
+  eligible: (request) => request.environment !== "local",
+  run: () => Effect.succeed("rolled-back"),
+});
+
+test("routing can be projected, so evidence stays out of the prompt", async () => {
+  let seen;
+  const model = (options) => {
+    seen = options.state;
+    return routesTo({ inspect: 0.9, deploy: 0.05, rollback: 0.05 })(options);
+  };
+
+  const projected = Procedure.registry(Ticket, [inspect, deploy, rollback], {
+    routeBy: { schema: Schema.String, select: (request) => request.ask },
+  });
+
+  const result = await run(projected.invoke(ticket("what is this about?")), model);
+  assert.equal(result, "inspected:what is this about?");
+  assert.equal(seen, "what is this about?", "the router saw only the projection");
+  assert.equal(projected.routeInput, Schema.String);
+});
+
+test("without a projection the router sees the whole input", async () => {
+  let seen;
+  const model = (options) => {
+    seen = options.state;
+    return routesTo({ inspect: 0.9, deploy: 0.05, rollback: 0.05 })(options);
+  };
+
+  const whole = Procedure.registry(Ticket, [inspect, deploy, rollback]);
+  await run(whole.invoke(ticket("what is this about?")), model);
+  assert.equal(seen.evidence, "a very large blob");
+});
+
+test("ineligible procedures are removed before the model is asked", async () => {
+  let asked;
+  const model = (options) => {
+    asked = Object.keys(Object.values(options.decisions)[0].criteria);
+    return routesTo({ inspect: 0.9, deploy: 0.04, rollback: 0.03, escalate: 0.03 })(options);
+  };
+
+  const registry = Procedure.registry(Ticket, [inspect, deploy, rollback, escalate], {
+    routeBy: { schema: Schema.String, select: (request) => request.ask },
+  });
+
+  await run(registry.invoke(ticket("what is this?", "production")), model);
+  assert.deepEqual(asked, ["inspect", "deploy", "rollback", "escalate"]);
+
+  await run(registry.invoke(ticket("what is this?", "local")), model);
+  assert.deepEqual(asked, ["inspect", "escalate"], "deploy and rollback are not offered locally");
+});
+
+test("a single eligible procedure is routed to without a model call", async () => {
+  let calls = 0;
+  const model = (options) => {
+    calls += 1;
+    return routesTo({ deploy: 0.5, rollback: 0.5 })(options);
+  };
+
+  const releases = Procedure.registry(Ticket, [deploy, rollback], {
+    routeBy: { schema: Schema.String, select: (request) => request.ask },
+  });
+
+  // Locally neither is eligible.
+  await assert.rejects(
+    () => run(releases.invoke(ticket("ship it", "local")), model),
+    (error) => (error?.cause ?? error)?._tag === "NoEligibleProcedureError",
+  );
+  assert.equal(calls, 0);
+
+  // Narrow to exactly one and the question answers itself.
+  const onlyDeploy = Procedure.registry(Ticket, [deploy, inspect], {
+    routeBy: { schema: Schema.String, select: (request) => request.ask },
+  });
+  const route = await run(
+    onlyDeploy.route(ticket("ship it", "local")),
+    model,
+  );
+  assert.equal(route._tag, "Matched");
+  assert.equal(route.id, "inspect");
+  assert.equal(route.by, "elimination");
+  assert.equal(calls, 0, "elimination costs nothing");
+});
+
+test("invokeWithRoute exposes the selection alongside the result", async () => {
+  const model = routesTo({ inspect: 0.05, deploy: 0.9, rollback: 0.05 });
+  const registry = Procedure.registry(Ticket, [inspect, deploy, rollback], {
+    routeBy: { schema: Schema.String, select: (request) => request.ask },
+  });
+
+  const { route, value } = await run(
+    registry.invokeWithRoute(ticket("please release this")),
+    model,
+  );
+  assert.equal(value, "deployed:production");
+  assert.equal(route._tag, "Matched");
+  assert.equal(route.id, "deploy");
+  assert.equal(route.by, "model");
+  assert.equal(route.probability, 0.9);
+  assert.deepEqual(
+    route.ranked.map((candidate) => candidate.id),
+    ["deploy", "inspect", "rollback"],
+  );
+});
+
+test("a projected route is addressed by the projection, so evidence does not split the cache", async () => {
+  let calls = 0;
+  const model = (options) => {
+    calls += 1;
+    return routesTo({ inspect: 0.9, deploy: 0.05, rollback: 0.05 })(options);
+  };
+
+  const registry = Procedure.registry(Ticket, [inspect, deploy, rollback], {
+    routeBy: { schema: Schema.String, select: (request) => request.ask },
+  });
+
+  const store = Model.store();
+  const cache = [Model.caching(store)];
+  await run(registry.invoke(ticket("what is this?", "production", "diff A")), model, cache);
+  await run(registry.invoke(ticket("what is this?", "production", "diff B")), model, cache);
+  assert.equal(calls, 1, "the same question about different evidence reuses the routing answer");
 });

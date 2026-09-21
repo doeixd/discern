@@ -72,7 +72,12 @@ const explainChange = Procedure.make({
   run: (request) => Effect.succeed(request.change.summary),
 });
 
-const changes = Procedure.registry(Request, [reviewChange, explainChange]);
+// The router only needs the intent, so the diff never reaches the routing
+// prompt — fewer tokens, better signal, and the routing answer is cached per
+// question rather than per question-and-diff.
+const changes = Procedure.registry(Request, [reviewChange, explainChange], {
+  routeBy: { schema: Schema.String, select: (request) => request.ask },
+});
 
 // --- the provider: any Effect DecisionModel, here TypeSafe / Jev ---
 

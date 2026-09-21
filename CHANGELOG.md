@@ -44,6 +44,14 @@ input)`, which makes a recording and a cache the same data structure.
   provider's chosen label, and returns `Uncertain` instead of resolving a
   near-tie. `registry.decision` is an ordinary pattern, so `Discern.Eval`
   measures the router.
+- `routeBy` routes on a projection of the input, so large evidence never
+  reaches the routing prompt and the routing answer is addressed by the
+  question alone.
+- `eligible` removes a procedure deterministically before the model is asked.
+  Narrowing to one candidate skips the model (`by: "elimination"`); narrowing
+  to none yields `Route.None` and `NoEligibleProcedureError`, kept separate
+  from uncertainty.
+- `invokeWithRoute` returns the routing decision alongside the result.
 - Registries are homogeneous in input, enforced in the types. `DecisionModel`
   has no structured generation, so routing can select a procedure but never
   construct its input.
