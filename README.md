@@ -133,7 +133,7 @@ library or from the provider packages.
 ## Contents
 
 - [Status](#status) · [Install](#install)
-- **Why** — [Why not just `if (await model(...))`?](#why-not-just-if-await-model)
+- **Why** — [Why not `Decision` directly?](#why-not-decision-directly)
 - **Patterns** — [One observation, many patterns](#one-observation-many-patterns) ·
   [Input-aware decisions](#input-aware-decisions) ·
   [Semantic patterns](#semantic-patterns) ·
@@ -187,23 +187,90 @@ npm run example
 It uses a stub provider, so it is deterministic and costs nothing, and it
 exercises uncertainty, recording, replay, budgets and routing end to end.
 
-## Why not just `if (await model(...))`?
+## Why not `Decision` directly?
 
-Because semantic evidence is not always boolean.
-
-A model may say:
-
-```text
-P(risky) = 0.70
-```
-
-If your policy is:
+Effect already gives you everything you need to ask a model a question. Here is
+the policy from above written straight against `Decision` and `DecisionModel`:
 
 ```ts
-risky.above(0.8, { missBelow: 0.5 })
+import { Effect, Schema } from "effect"
+import * as Decision from "effect/unstable/ai/Decision"
+import * as DecisionModel from "effect/unstable/ai/DecisionModel"
+
+const ChangeReview = Decision.make({
+  input: Change,
+  decisions: {
+    impact: Decision.classify({
+      instructions: "Classify the public API impact of this change",
+      criteria: {
+        none: "No public API impact",
+        additive: "Adds API without changing existing behavior",
+        behavioral: "Changes behavior of existing API",
+        breaking: "Existing callers can break",
+      },
+    }),
+    risk: Decision.probability({
+      instructions: "This change is likely to cause a regression",
+    }),
+  },
+});
+
+const reviewRaw = (change: typeof Change.Type) =>
+  Effect.gen(function* () {
+    const { answers } = yield* DecisionModel.decide(ChangeReview, { input: change });
+
+    if (answers.impact.label === "breaking" && answers.risk.probability > 0.8) {
+      return "block";
+    }
+    if (answers.impact.label === "breaking") {
+      return "migration-required";
+    }
+    return "ship";
+  });
 ```
 
-Discern interprets that as:
+That is reasonable code, and where the branching really is boolean it is the
+right amount of machinery. Here is the same policy in Discern:
+
+```ts
+import * as Discern from "@doeixd/discern"
+
+const OnChange = Discern.on(Change);
+
+const impact = OnChange.classify({
+  id: "api-impact",
+  instructions: "Classify the public API impact of this change",
+  criteria: {
+    none: "No public API impact",
+    additive: "Adds API without changing existing behavior",
+    behavioral: "Changes behavior of existing API",
+    breaking: "Existing callers can break",
+  },
+});
+
+const risky = OnChange.probability({
+  id: "regression-risk",
+  instructions: "This change is likely to cause a regression",
+});
+
+const review = Discern.type(Change).pipe(
+  Discern.when(
+    Discern.and(impact.is("breaking"), risky.above(0.8, { missBelow: 0.5 })),
+    () => "block" as const,
+  ),
+  Discern.when(impact.is("breaking"), () => "migration-required" as const),
+  Discern.onUncertain(() => "human-review" as const),
+  Discern.orElse(() => "ship" as const),
+);
+```
+
+The difference is not line count. It is four things the first version does
+quietly.
+
+**A 0.62 risk ships.** `answers.risk.probability > 0.8` is false at 0.62, so
+the change falls through to `ship`. The model said *maybe* and the program
+heard *no*. The second version sends it to `onUncertain`, because
+`above(0.8, { missBelow: 0.5 })` describes three outcomes rather than two:
 
 ```text
 >= .80    Match
@@ -211,22 +278,29 @@ Discern interprets that as:
 .50-.80   Uncertain
 ```
 
-That matters. This program:
+Leave out `onUncertain` and it fails with `UncertainMatchError` instead —
+never silently.
 
-```ts
-Discern.type(Change).pipe(
-  Discern.when(risky.above(0.8, { missBelow: 0.5 }), block),
-  Discern.orElse(ship)
-)
-```
+**`answers.impact.label` is treated as fact.** Effect's own documentation notes
+that the label "is chosen by the provider and need not have the highest
+probability", so a `.34 / .33 / .33` classification reads exactly like a `.95`
+one. `impact.is("breaking", { match: 0.8, margin: 0.15 })` states the
+confidence you actually require.
 
-**does not ship when the model is merely uncertain.** It fails with `UncertainMatchError` unless you explicitly provide:
+**The decision set and the branching drift apart.** In the first version the
+`decisions` record and the `if` chain are maintained separately: adding a rule
+means editing both, and a decision no branch reads any more stays in the batch
+and is still paid for. In the second the decisions *are* whatever the patterns
+refer to — and a deterministic guard that already settles a case drops its
+decisions from the request for that input.
 
-```ts
-Discern.onUncertain(manualReview)
-```
+**There is nothing to inspect or reuse.** No compiled plan, no trace, and no
+content-addressed observations — so no replay, no cache, no budget, and no way
+to find out whether `0.8` was the right number in the first place. A pattern is
+a value, so `Discern.Eval.calibrate` can sweep thresholds over labelled
+examples and let the data choose.
 
-Discern treats uncertainty as a control-flow outcome instead of silently collapsing it into `false`.
+Both halves are compiled as `examples/comparison.ts`.
 
 ## One observation, many patterns
 
