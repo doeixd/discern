@@ -8,6 +8,7 @@ error. Provider-neutral: runs on TypeSafe's Jev, or any other `DecisionModel`.
 
 [![Silent tutorial trailer: one beat from each chapter, following a code change from a Jev judgment through Decision, DecisionModel, Discern patterns, policies and procedure registries. Click to watch the full explanation.](https://raw.githubusercontent.com/doeixd/discern/main/docs/assets/discern-explainer-silent.gif)](https://github.com/doeixd/discern/blob/main/docs/assets/discern-explainer-silent.mp4)
 
+[Watch the full tutorial](https://github.com/doeixd/discern/blob/main/docs/assets/discern-explainer-silent.mp4) — 2:44, silent, with on-screen explanations.
 
 Follow one code change through **Jev → Effect Decision / DecisionModel →
 Discern → Procedures → nested registries**. 
