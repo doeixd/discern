@@ -48,11 +48,24 @@ if __name__ == "__main__":
     ffmpeg("-i", SOURCE, "-i", chapter_file, "-map_metadata", "1", "-map_chapters", "1",
            "-map", "0:v:0", "-c:v", "libx264", "-crf", "22", "-pix_fmt", "yuv420p",
            *sound, "-movflags", "+faststart", OUT / f"{STEM}.mp4")
-    # Only the opening Jev lesson loops inline; the full tutorial has narration.
-    preview_end = chapters[1]["start"] - .35
-    ffmpeg("-i", SOURCE, "-t", preview_end, "-filter_complex",
-           "fps=8,scale=800:-1:flags=lanczos,split[a][b];"
-           "[a]palettegen=max_colors=96:stats_mode=diff[p];"
+    # The GIF is a trailer, not the opening: one beat per chapter, so the loop
+    # shows the whole arc from Jev to composed programs rather than the intro.
+    # LEAD skips the chapter transition so each beat lands on a settled frame.
+    LEAD, BEAT, HOOK, GIF_FPS = 1.2, 2.0, 3.6, 12
+    limit = timeline[-1]["end"]
+    beats = []
+    for i, c in enumerate(chapters):
+        start = c["start"] + LEAD
+        end = min(start + (HOOK if i == 0 else BEAT), limit)
+        if end > start:
+            beats.append((start, end))
+    trim = "".join(f"[0:v]trim=start={s:.3f}:end={e:.3f},setpts=PTS-STARTPTS[b{i}];"
+                   for i, (s, e) in enumerate(beats))
+    concat = "".join(f"[b{i}]" for i in range(len(beats)))
+    ffmpeg("-i", SOURCE, "-filter_complex",
+           f"{trim}{concat}concat=n={len(beats)}:v=1:a=0[t];"
+           f"[t]fps={GIF_FPS},scale=800:-1:flags=lanczos,split[a][b];"
+           "[a]palettegen=max_colors=128:stats_mode=full[p];"
            "[b][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle",
            "-loop", "0", OUT / f"{STEM}.gif")
     poster = "discern-poster-silent.png" if SILENT else "discern-poster.png"

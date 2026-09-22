@@ -6,7 +6,7 @@ Type-safe patterns, policies and routable procedures over Effect's `Decision`
 and `DecisionModel` — where *maybe* is a branch you handle, not a rounding
 error. Provider-neutral: runs on TypeSafe's Jev, or any other `DecisionModel`.
 
-[![Silent tutorial preview: Jev receives a code change and a question, then returns an estimated regression probability. Click to watch the full explanation.](https://raw.githubusercontent.com/doeixd/discern/main/docs/assets/discern-explainer-silent.gif)](https://github.com/doeixd/discern/blob/main/docs/assets/discern-explainer-silent.mp4)
+[![Silent tutorial trailer: one beat from each chapter, following a code change from a Jev judgment through Decision, DecisionModel, Discern patterns, policies and procedure registries. Click to watch the full explanation.](https://raw.githubusercontent.com/doeixd/discern/main/docs/assets/discern-explainer-silent.gif)](https://github.com/doeixd/discern/blob/main/docs/assets/discern-explainer-silent.mp4)
 
 
 Follow one code change through **Jev → Effect Decision / DecisionModel →
