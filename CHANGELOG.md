@@ -2,6 +2,95 @@
 
 This project is pre-1.0 and the API still moves between minor versions.
 
+## 0.5.0
+
+Mistakes that used to compile or replay quietly are now refused.
+
+### Upgrading from 0.4.0
+
+Most programs upgrade without changes. Check for these:
+
+- A `classify` or `rate` whose `criteria` is typed `string` (for example a
+  `Record<string, string>` loaded at runtime), contains a template label, or is
+  empty no longer compiles. Wrap an Effect `Decision.classify` with
+  `Discern.decision` and read it with `where`, or route with
+  `Procedure.registry`.
+- `above` or `atLeast` with a `missBelow` above the threshold, and `below` or
+  `atMost` with a `missAbove` under it, now throw `InvalidThresholdError` when
+  the pattern is built.
+- `between` with its ends reversed, such as `risk.between(0.6, 0.4)` or
+  `severity.between("major", "minor")`, now throws `InvalidRangeError` when the
+  pattern is built. It could never match.
+- `Eval.calibrate` needs at least one value in `values`. A variable typed
+  `V[]` must be shown non-empty, for example as `[first, ...rest]`.
+- Tests that match the old threshold or id-collision messages with a regex
+  should check `instanceof InvalidThresholdError` or
+  `instanceof DecisionIdCollisionError` instead.
+- A stored observation that fails validation now fails replay and cache reads,
+  where it used to be used as-is. Recordings Discern wrote itself are
+  unaffected.
+
+### Added
+
+- **`Discern.Model.Observations` and `Discern.Model.Observation` are
+  schemas**, and the types of the same names now derive from them. A snapshot
+  read back from outside the program can be decoded with
+  `Schema.decodeUnknownSync(Discern.Model.Observations)` rather than cast, so a
+  malformed or foreign recording is refused at the boundary.
+- **`Discern.Model.isInvalidObservation`** recognises the failure raised when a
+  stored answer fails validation (see Fixed).
+- **`Discern.InvalidThresholdError`, `Discern.InvalidRangeError` and
+  `Discern.DecisionIdCollisionError`** name the mistakes Discern catches while a
+  policy is being built. All three are thrown, not failures on the error
+  channel: they are faults in the policy's definition, which no run can
+  encounter, so they stay out of every run's error type.
+
+### Changed
+
+- **`classify` and `rate` refuse label sets the compiler cannot enumerate.**
+  A `criteria` whose labels are `string` (such as a `Record<string, string>`),
+  include an infinite template such as `` `tone-${string}` ``, or are empty is
+  now a compile error, standalone and through `Discern.on(schema)`. Every
+  label check compares against the label union, so with an open set a typo in
+  `is`, a duplicate `caseOf`, or a missing case under `exhaustive` all
+  compiled; with an empty set, `exhaustive` passed without a single case.
+  Labels known only at runtime go through `Discern.decision`, read with
+  `where`, or through `Procedure.registry`, whose routing is unaffected.
+- **`above`, `atLeast`, `below` and `atMost` check their miss bound.** A
+  `missBelow` above the threshold, or a `missAbove` under it, used to leave a
+  pattern silently two-valued. It now throws `InvalidThresholdError`, as `band`
+  and `is(label, { match, miss })` already did.
+- **`between` checks its ends**, on probabilities and on ratings. A low end
+  above the high end made a pattern that could never match, so a case built on
+  it silently never fired. It now throws `InvalidRangeError`. Equal ends are
+  allowed and match exactly that value or level.
+- **`Eval.calibrate` requires at least one candidate in `values`**, typed as a
+  non-empty tuple. An untyped caller passing `[]` gets a defect before any
+  model call, rather than one after the sweep.
+- **`Discern.ask` with an unscoped decision returns a defect instead of
+  throwing.** The type already refuses it; an untyped caller now sees the
+  failure when the Effect runs, as with any function that returns an Effect.
+
+### Fixed
+
+- **`replaying` and `caching` validate the answers they read back from a
+  store.** Interceptors sit above `DecisionModel` validation, so a stored answer
+  was handed to the policy as-is: a hand-edited recording with a probability of
+  7, or a label the decision does not have, replayed as a confident answer.
+  Stored answers now pass the same checks as a provider's, and a bad one fails
+  with an `AiError` that `isInvalidObservation` recognises. Honest recordings
+  replay exactly as before. Each check records a `DecisionModel.decide` span,
+  so cache and replay hits now appear in traces.
+
+### Documentation
+
+- Ratings: `atLeast`, `atMost` and `between` compare a probability-weighted
+  position that can fall between two levels, so `atLeast("major")` and
+  `atMost("minor")` can both miss the same answer. The README and the method
+  docs explain the gap and the ways to place it.
+- New README sections on finite label sets, threshold and range validation,
+  decoding a snapshot, and what replay checks.
+
 ## 0.4.0
 
 Registries learned to ask less and report more.

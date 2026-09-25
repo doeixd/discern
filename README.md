@@ -171,7 +171,7 @@ the library or from the provider packages.
 
 ## Status
 
-Early and unstable (`0.3.x`). It targets Effect v4 release candidates and
+Early and unstable (pre-1.0). It targets Effect v4 release candidates and
 `effect/unstable/ai`, so both the Effect APIs underneath it and Discern's own
 surface can still change between minor versions.
 

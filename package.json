@@ -1,6 +1,6 @@
 {
   "name": "@doeixd/discern",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Uncertainty-aware semantic control flow for Effect: type-safe patterns, policies and routable procedures over DecisionModel.",
   "license": "MIT",
   "author": "Patrick Glenn",
