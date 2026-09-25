@@ -129,6 +129,59 @@ export class ExhaustiveMatchError extends Error {
 
 export type DiscernError = UncertainMatchError | ExhaustiveMatchError;
 
+/**
+ * A threshold whose miss bound sits on the wrong side of its match bound, which
+ * leaves no room for the uncertain band between them.
+ *
+ * Thrown when the pattern is built, not when it runs: it is a mistake in the
+ * policy, so it stays out of every run's error type.
+ */
+export class InvalidThresholdError extends Error {
+  readonly _tag = "InvalidThresholdError";
+  override readonly name = "InvalidThresholdError";
+  constructor(
+    readonly pattern: string,
+    readonly match: number,
+    readonly miss: number,
+  ) {
+    super(`${pattern}: the miss bound ${miss} is on the wrong side of the match bound ${match}`);
+  }
+}
+
+/**
+ * A range whose low end sits above its high end, so no answer can fall inside
+ * it and the pattern could never match. Equal ends are allowed: they match
+ * exactly that value or level.
+ *
+ * Thrown when the pattern is built, not when it runs, like
+ * {@link InvalidThresholdError}.
+ */
+export class InvalidRangeError extends Error {
+  readonly _tag = "InvalidRangeError";
+  override readonly name = "InvalidRangeError";
+  constructor(
+    readonly pattern: string,
+    readonly low: number | string,
+    readonly high: number | string,
+  ) {
+    super(`${pattern}: the low end ${low} is above the high end ${high}, so nothing can match`);
+  }
+}
+
+/**
+ * Two different decision definitions share one id in a single policy or
+ * pattern, so their answers could not be told apart.
+ *
+ * Thrown when the patterns are combined, not when they run.
+ */
+export class DecisionIdCollisionError extends Error {
+  readonly _tag = "DecisionIdCollisionError";
+  override readonly name = "DecisionIdCollisionError";
+  constructor(readonly decisionId: string) {
+    super(`Decision id "${decisionId}" is used by two different decision definitions`);
+  }
+}
+
 // -------------------------------------------------------------------------------------------------
 // Decisions
 // -------------------------------------------------------------------------------------------------
@@ -240,7 +293,7 @@ const classifyFor = <Input, Label extends string, S extends Schema.Constraint | 
     }
     const matchAt = thresholds.match ?? 0.8;
     const missAt = thresholds.miss ?? matchAt;
-    if (missAt > matchAt) throw new Error("Classify threshold `miss` must be <= `match`");
+    if (missAt > matchAt) throw new InvalidThresholdError(`${node.id} is ${label}`, matchAt, missAt);
     return node.whereResult(
       (answer) => {
         const probability = answer.probabilities[label] ?? 0;
@@ -272,12 +325,41 @@ const classifyFor = <Input, Label extends string, S extends Schema.Constraint | 
   });
 };
 
-/** Create an unscoped semantic classification. */
-export const classify = <Label extends string>(options: {
+interface ClassifyOptions<Label extends string> {
   readonly id?: string;
   readonly instructions: string;
   readonly criteria: { readonly [L in Label]: string };
-}): ClassifyDecision<any, Label> => classifyFor<any, Label, undefined>(options, undefined);
+}
+
+interface RateOptions<Level extends string> {
+  readonly id?: string;
+  readonly instructions: string;
+  readonly criteria: ReadonlyArray<Level>;
+}
+
+/**
+ * `true` for a label type with infinitely many members: `string`, a template
+ * such as `` `tone-${string}` ``, or `Uppercase<string>`. `Record` over such a
+ * type is an index signature, which `{}` satisfies; over a literal it is not.
+ */
+type Unbounded<Label> = Label extends string ? ({} extends Record<Label, never> ? true : false) : never;
+
+/**
+ * Options whose label set the compiler can enumerate. An empty or unbounded set
+ * turns `criteria` into `never`, because every label check downstream (`is`,
+ * `atLeast`, `caseOf`, `exhaustive`) compares against the label union and would
+ * pass vacuously. Labels known only at runtime go through `Discern.decision`.
+ */
+type Finite<Label extends string, Options> = [Label] extends [never]
+  ? Options & { readonly criteria: never }
+  : true extends Unbounded<Label>
+    ? Options & { readonly criteria: never }
+    : Options;
+
+/** Create an unscoped semantic classification. */
+export const classify = <Label extends string>(
+  options: Finite<Label, ClassifyOptions<Label>>,
+): ClassifyDecision<any, Label> => classifyFor<any, Label, undefined>(options, undefined);
 
 export interface ProbabilityBand {
   /** Value at or above which the pattern matches. */
@@ -292,6 +374,10 @@ export interface ProbabilityDecision<Input = any, S extends Schema.Constraint | 
   readonly atLeast: (threshold: number, options?: { readonly missBelow?: number }) => Pattern<Input>;
   readonly below: (threshold: number, options?: { readonly missAbove?: number }) => Pattern<Input>;
   readonly atMost: (threshold: number, options?: { readonly missAbove?: number }) => Pattern<Input>;
+  /**
+   * Matches when the probability lies within `[low, high]`, inclusive. Throws
+   * `InvalidRangeError` when `low` is above `high`.
+   */
   readonly between: (low: number, high: number) => Pattern<Input>;
   readonly band: (band: ProbabilityBand) => Pattern<Input>;
 }
@@ -306,8 +392,12 @@ const probabilityFor = <Input, S extends Schema.Constraint | undefined>(
 ): ProbabilityDecision<Input, S> => {
   const { id, ...definition } = options;
   const node = makeDecisionNode<Input, Decision.Probability, S>(Decision.probability(definition), schema, id);
-  const above = (threshold: number, inclusive: boolean, missBelow?: number) =>
-    node.whereResult(
+  const above = (threshold: number, inclusive: boolean, missBelow?: number) => {
+    const description = `${node.id} ${inclusive ? ">=" : ">"} ${threshold}`;
+    if (missBelow !== undefined && missBelow > threshold) {
+      throw new InvalidThresholdError(description, threshold, missBelow);
+    }
+    return node.whereResult(
       (answer) => {
         const p = answer.probability;
         if (inclusive ? p >= threshold : p > threshold) return matched(`p=${p.toFixed(3)}`);
@@ -315,10 +405,15 @@ const probabilityFor = <Input, S extends Schema.Constraint | undefined>(
         if (p <= missAt) return missed(`p=${p.toFixed(3)}`);
         return uncertain(`p=${p.toFixed(3)} is between ${missAt} and ${threshold}`);
       },
-      { description: `${node.id} ${inclusive ? ">=" : ">"} ${threshold}` },
+      { description },
     );
-  const below = (threshold: number, inclusive: boolean, missAbove?: number) =>
-    node.whereResult(
+  };
+  const below = (threshold: number, inclusive: boolean, missAbove?: number) => {
+    const description = `${node.id} ${inclusive ? "<=" : "<"} ${threshold}`;
+    if (missAbove !== undefined && missAbove < threshold) {
+      throw new InvalidThresholdError(description, threshold, missAbove);
+    }
+    return node.whereResult(
       (answer) => {
         const p = answer.probability;
         if (inclusive ? p <= threshold : p < threshold) return matched(`p=${p.toFixed(3)}`);
@@ -326,19 +421,22 @@ const probabilityFor = <Input, S extends Schema.Constraint | undefined>(
         if (p >= missAt) return missed(`p=${p.toFixed(3)}`);
         return uncertain(`p=${p.toFixed(3)} is between ${threshold} and ${missAt}`);
       },
-      { description: `${node.id} ${inclusive ? "<=" : "<"} ${threshold}` },
+      { description },
     );
+  };
 
   return Object.assign(node, {
     above: (threshold: number, more: { readonly missBelow?: number } = {}) => above(threshold, false, more.missBelow),
     atLeast: (threshold: number, more: { readonly missBelow?: number } = {}) => above(threshold, true, more.missBelow),
     below: (threshold: number, more: { readonly missAbove?: number } = {}) => below(threshold, false, more.missAbove),
     atMost: (threshold: number, more: { readonly missAbove?: number } = {}) => below(threshold, true, more.missAbove),
-    between: (low: number, high: number) => node.where((answer) => answer.probability >= low && answer.probability <= high, {
-      description: `${node.id} between ${low} and ${high}`,
-    }),
+    between: (low: number, high: number) => {
+      const description = `${node.id} between ${low} and ${high}`;
+      if (low > high) throw new InvalidRangeError(description, low, high);
+      return node.where((answer) => answer.probability >= low && answer.probability <= high, { description });
+    },
     band: ({ match: matchAt, miss: missAt }: ProbabilityBand) => {
-      if (missAt > matchAt) throw new Error("Probability band `miss` must be <= `match`");
+      if (missAt > matchAt) throw new InvalidThresholdError(`${node.id} band`, matchAt, missAt);
       return above(matchAt, true, missAt);
     },
   });
@@ -354,9 +452,25 @@ export const probability = (options: {
 export interface RateDecision<Input, Level extends string, S extends Schema.Constraint | undefined = undefined>
   extends DecisionNode<Input, Decision.Rate<Level>, S> {
   readonly levels: ReadonlyArray<Level>;
+  /** Matches when the most probable level is `level`. */
   readonly is: (level: Level) => Pattern<Input>;
+  /**
+   * Matches when the rating is at or above the position of `level`.
+   *
+   * The rating is a probability-weighted position and can fall between two
+   * levels. A rating of 1.5 on `["trivial", "minor", "major", "critical"]` is
+   * below `major` (2), so `atLeast("major")` misses it, and above `minor` (1),
+   * so `atMost("minor")` misses it too: the two are not complements. Use
+   * `is(level)` to read the most probable level instead of the position.
+   */
   readonly atLeast: (level: Level) => Pattern<Input>;
+  /** Matches when the rating is at or below the position of `level`. See `atLeast` on ratings between levels. */
   readonly atMost: (level: Level) => Pattern<Input>;
+  /**
+   * Matches when the rating lies within both positions, inclusive. Ratings
+   * between levels count by position. Throws `InvalidRangeError` when `low`
+   * comes after `high` on the scale.
+   */
   readonly between: (low: Level, high: Level) => Pattern<Input>;
 }
 
@@ -376,19 +490,21 @@ const rateFor = <Input, const Level extends string, S extends Schema.Constraint 
     is: (level: Level) => node.where((answer) => answer.label === level, { description: `${node.id} is ${level}` }),
     atLeast: (level: Level) => node.where((answer) => answer.rating >= indexOf(level), { description: `${node.id} >= ${level}` }),
     atMost: (level: Level) => node.where((answer) => answer.rating <= indexOf(level), { description: `${node.id} <= ${level}` }),
-    between: (low: Level, high: Level) => node.where(
-      (answer) => answer.rating >= indexOf(low) && answer.rating <= indexOf(high),
-      { description: `${node.id} between ${low} and ${high}` },
-    ),
+    between: (low: Level, high: Level) => {
+      const description = `${node.id} between ${low} and ${high}`;
+      if (indexOf(low) > indexOf(high)) throw new InvalidRangeError(description, low, high);
+      return node.where(
+        (answer) => answer.rating >= indexOf(low) && answer.rating <= indexOf(high),
+        { description },
+      );
+    },
   });
 };
 
 /** Create an unscoped semantic ordered rating. */
-export const rate = <const Level extends string>(options: {
-  readonly id?: string;
-  readonly instructions: string;
-  readonly criteria: ReadonlyArray<Level>;
-}): RateDecision<any, Level> => rateFor<any, Level, undefined>(options, undefined);
+export const rate = <const Level extends string>(
+  options: Finite<Level, RateOptions<Level>>,
+): RateDecision<any, Level> => rateFor<any, Level, undefined>(options, undefined);
 
 // -------------------------------------------------------------------------------------------------
 // Patterns
@@ -474,7 +590,7 @@ const distinctDecisions = (patterns: ReadonlyArray<Pattern<any>>): ReadonlyArray
     for (const node of pattern.decisions) {
       const previous = byId.get(node.id);
       if (previous !== undefined && previous.fingerprint !== node.fingerprint) {
-        throw new Error(`Decision id collision for "${node.id}": definitions differ`);
+        throw new DecisionIdCollisionError(node.id);
       }
       byId.set(node.id, previous ?? node);
     }
@@ -556,7 +672,7 @@ const distinctNodes = (nodes: ReadonlyArray<AnyDecisionNode>): ReadonlyArray<Any
   for (const node of nodes) {
     const previous = byId.get(node.id);
     if (previous !== undefined && previous.fingerprint !== node.fingerprint) {
-      throw new Error(`Decision id collision for "${node.id}"`);
+      throw new DecisionIdCollisionError(node.id);
     }
     byId.set(node.id, previous ?? node);
   }
@@ -569,21 +685,17 @@ const distinctNodes = (nodes: ReadonlyArray<AnyDecisionNode>): ReadonlyArray<Any
 
 export interface DecisionScope<S extends Schema.Constraint> {
   readonly schema: S;
-  readonly classify: <Label extends string>(options: {
-    readonly id?: string;
-    readonly instructions: string;
-    readonly criteria: { readonly [L in Label]: string };
-  }) => ClassifyDecision<S["Type"], Label, S>;
+  readonly classify: <Label extends string>(
+    options: Finite<Label, ClassifyOptions<Label>>,
+  ) => ClassifyDecision<S["Type"], Label, S>;
   readonly probability: (options: {
     readonly id?: string;
     readonly instructions: string;
     readonly criteria?: { readonly false: string; readonly true: string } | undefined;
   }) => ProbabilityDecision<S["Type"], S>;
-  readonly rate: <const Level extends string>(options: {
-    readonly id?: string;
-    readonly instructions: string;
-    readonly criteria: ReadonlyArray<Level>;
-  }) => RateDecision<S["Type"], Level, S>;
+  readonly rate: <const Level extends string>(
+    options: Finite<Level, RateOptions<Level>>,
+  ) => RateDecision<S["Type"], Level, S>;
 }
 
 /** Bind semantic decision constructors to one input schema. */
@@ -789,8 +901,12 @@ export const ask = <Input, D extends AnyDecision, S extends Schema.Constraint>(
   node: DecisionNode<Input, D, S>,
   input: Input,
 ): Effect.Effect<Answer<D>, AiError.AiError, DecisionModel.DecisionModel | S["EncodingServices"]> => {
+  // The type already requires a scoped node. A function that returns an Effect
+  // reports misuse inside it, as a defect, rather than throwing on the call.
   if (node.schema === undefined) {
-    throw new Error("Discern.ask requires a schema-scoped decision created with Discern.on(schema)");
+    return Effect.die(
+      new Error("Discern.ask requires a schema-scoped decision created with Discern.on(schema)"),
+    ) as any;
   }
   return Effect.map(
     observe(node.schema, [node as unknown as AnyDecisionNode], input),
@@ -1196,21 +1312,27 @@ export const Eval = {
   /** Select the best sweep value by a metric, preferring higher coverage on ties. */
   calibrate: <I, S extends Schema.Constraint, V>(options: {
     readonly schema: S;
-    readonly values: ReadonlyArray<V>;
+    /** At least one candidate, or there would be nothing to choose. */
+    readonly values: readonly [V, ...ReadonlyArray<V>];
     readonly pattern: (value: V) => Pattern<I>;
     readonly examples: ReadonlyArray<EvalExample<I>>;
     readonly metric?: "f1" | "accuracy" | "selectiveAccuracy";
-  }) =>
-    Effect.map(
+  }) => {
+    // The type already requires a candidate. An untyped caller gets a defect
+    // before any model call, inside the Effect rather than thrown on the call.
+    if (options.values.length === 0) {
+      return Effect.die(new Error("Discern.Eval.calibrate needs at least one candidate value"));
+    }
+    return Effect.map(
       Eval.sweep(options),
       (results) => {
         const metric = options.metric ?? "f1";
-        if (results.length === 0) throw new Error("Discern.Eval.calibrate needs at least one candidate value");
         const sorted = [...results].sort((a, b) => {
           const delta = b.report.metrics[metric] - a.report.metrics[metric];
           return delta !== 0 ? delta : b.report.metrics.coverage - a.report.metrics.coverage;
         });
         return { best: sorted[0], results };
       },
-    ),
+    );
+  },
 };

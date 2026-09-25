@@ -471,6 +471,17 @@ risk.between(0.4, 0.6)
 risk.band({ match: 0.8, miss: 0.5 })
 ```
 
+A miss bound on the wrong side of its match bound, such as
+`risk.above(0.5, { missBelow: 0.8 })`, leaves no room for `Uncertain`. Building
+that pattern throws `Discern.InvalidThresholdError`, so the mistake surfaces
+when the policy is defined rather than as a quietly two-valued pattern. The
+same goes for `band` and for `is(label, { match, miss })`.
+
+Likewise a reversed range, such as `risk.between(0.6, 0.4)` or
+`severity.between("major", "minor")`, could never match, so building it throws
+`Discern.InvalidRangeError`. Equal ends are fine: `between(0.5, 0.5)` matches
+exactly `0.5`.
+
 ### Ordered ratings
 
 ```ts
@@ -484,6 +495,34 @@ severity.is("critical")
 severity.atLeast("major")
 severity.atMost("minor")
 severity.between("minor", "major")
+```
+
+`atLeast`, `atMost` and `between` compare the answer's `rating`, a
+probability-weighted position that can fall between two levels. A rating of
+`1.5` sits between `minor` (1) and `major` (2), so both `atLeast("major")` and
+`atMost("minor")` miss it: they are not complements, and a policy with one case
+for each can fall through to `orElse`. `is` reads the most probable level
+instead, which is always exactly one of them. When the gap matters, say which
+side it belongs on, with `atLeast("minor")` or `atMost("major")`, or give it
+its own case with `between("minor", "major")`.
+
+### Label sets must be finite
+
+`criteria` must be a fixed, non-empty set of literal labels: written inline, or
+declared `as const`. A set typed `string` (such as a `Record<string, string>`
+loaded from a prompt registry), one with a template label such as
+`` `tone-${string}` ``, or an empty set does not compile. With any of those,
+`is`, `atLeast`, `caseOf` and `exhaustive` could no longer refuse a typo, a
+duplicate case, or a missing one.
+
+For labels known only at runtime, wrap an Effect decision and read it with
+`where`, or route with a [procedure registry](#procedures):
+
+```ts
+const tone = Discern.decision(
+  Decision.classify({ instructions: "Classify the tone", criteria: loadedTones }),
+);
+const calm = tone.where(({ label }) => label === "calm");
 ```
 
 ### Custom semantic refinement
@@ -622,7 +661,8 @@ const risk = OnChange.probability({
 ```
 
 Discern also fingerprints the actual decision definition. Reusing one ID for
-two different definitions in the same plan is rejected.
+two different definitions in the same plan throws
+`Discern.DecisionIdCollisionError` when the patterns are combined.
 
 Without an explicit ID, Discern derives one from the decision definition.
 
@@ -673,6 +713,22 @@ test:
 ```ts
 const snapshot = observations.snapshot()
 ```
+
+A snapshot read back from a file or a bug report is outside the program's
+control, so decode it with the `Discern.Model.Observations` schema rather than
+casting it. A malformed recording, or one from another format version, is
+refused at the boundary:
+
+```ts
+const snapshot = Schema.decodeUnknownSync(Discern.Model.Observations)(JSON.parse(text))
+```
+
+The schema checks the recording's shape, not the answers inside it, because
+an answer can only be judged against the decision that asked for it. That
+happens when the answer is read back: `replaying` and `caching` hold each
+stored answer to the same rules as a live provider's, so a probability of 7 or
+a label the decision does not have fails with an `AiError` rather than
+deciding anything.
 
 Replay reruns the program against those recorded answers and never reaches a
 model:
@@ -737,6 +793,7 @@ predicates rather than asking you to match on shapes:
 ```ts
 Discern.Model.isBudgetExceeded(error)
 Discern.Model.isReplayMiss(error)
+Discern.Model.isInvalidObservation(error) // a stored answer failed validation
 ```
 
 ## Evaluation and calibration

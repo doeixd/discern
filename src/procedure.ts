@@ -347,7 +347,15 @@ export const registry = <
       const criteria: Record<string, string> = Object.create(null);
       for (const id of candidates) criteria[id] = criterion(byId.get(id)!);
       const whole = candidates.length === members.length;
-      found = on(routeInput).classify({
+      // Candidate ids are chosen per call, so the label set is `string` and
+      // the finite-label check on `classify` would refuse it. The ids are
+      // checked against the registry's members at runtime instead.
+      const openClassify = on(routeInput).classify as (options: {
+        readonly id?: string;
+        readonly instructions: string;
+        readonly criteria: Record<string, string>;
+      }) => ClassifyDecision<any, string, any>;
+      found = openClassify({
         ...(options.id === undefined || !whole ? undefined : { id: options.id }),
         instructions,
         criteria,

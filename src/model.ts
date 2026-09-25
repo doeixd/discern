@@ -8,7 +8,8 @@
  * trees of programs, and code that never mentions Discern.
  *
  * Interception happens above answer validation, so recorded answers are the
- * validated ones and replay never has to re-derive them.
+ * validated ones. Answers read back from a store are validated again by the
+ * same rules, because a store can be loaded from a file.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -33,6 +34,13 @@ export const isBudgetExceeded = (error: unknown): error is AiError.AiError =>
 /** True for the failure raised when replay has no recorded answer for a decision. */
 export const isReplayMiss = (error: unknown): error is AiError.AiError =>
   error instanceof AiError.AiError && error.module === "Discern" && error.method === "replaying";
+
+/**
+ * True for the failure raised when an answer read back from a store fails
+ * validation, as a hand-edited or corrupted recording can.
+ */
+export const isInvalidObservation = (error: unknown): error is AiError.AiError =>
+  error instanceof AiError.AiError && error.module === "Discern" && error.method === "observation";
 
 // -------------------------------------------------------------------------------------------------
 // Observations
@@ -60,33 +68,49 @@ export const region =
       Effect.provideService(effect, CurrentRegion, [...parent, name]),
     );
 
-/** One recorded semantic answer, with enough context to read it unaided. */
-export interface Observation {
-  /** The decision's name in the batch it was requested in. Diagnostic only. */
-  readonly decisionId: string;
-  /** Fingerprint of the decision definition. Diagnostic only; the address already pins it. */
-  readonly fingerprint: string;
-  readonly kind: Decision.Any["_tag"];
-  /**
-   * The region stack this observation was recorded under.
-   *
-   * An observation is content-addressed, so one entry covers every place the
-   * same decision was asked about the same input, and only one region can be
-   * kept. `recording` sees every call and so moves the entry to the newest
-   * region; `caching` writes only on a miss, so under `caching` alone the entry
-   * keeps the region that first missed. For a faithful per-run tree, record
-   * each run into its own store.
-   */
-  readonly region: ReadonlyArray<string>;
-  /** A validated `Decision.Answer`. */
-  readonly answer: unknown;
-}
+/**
+ * One recorded semantic answer, with enough context to read it unaided.
+ *
+ * - `decisionId`: the decision's name in the batch it was requested in.
+ *   Diagnostic only.
+ * - `fingerprint`: the decision definition's fingerprint. Diagnostic only; the
+ *   address already pins it.
+ * - `region`: the region stack this observation was recorded under. An
+ *   observation is content-addressed, so one entry covers every place the same
+ *   decision was asked about the same input, and only one region can be kept.
+ *   `recording` sees every call and so moves the entry to the newest region;
+ *   `caching` writes only on a miss, so under `caching` alone the entry keeps
+ *   the region that first missed. For a faithful per-run tree, record each run
+ *   into its own store.
+ * - `answer`: a validated `Decision.Answer`. `replaying` and `caching`
+ *   validate it again when they read it back, since a store can be loaded from
+ *   a file that was edited after it was recorded.
+ */
+export const Observation = Schema.Struct({
+  decisionId: Schema.String,
+  fingerprint: Schema.String,
+  kind: Schema.Literals(["Classify", "Rate", "Probability"]),
+  region: Schema.Array(Schema.String),
+  answer: Schema.Unknown,
+});
+export type Observation = typeof Observation.Type;
 
-/** A serializable set of observations, keyed by content address. */
-export interface Observations {
-  readonly version: 2;
-  readonly entries: Readonly<Record<string, Observation>>;
-}
+/**
+ * A serializable set of observations, keyed by content address.
+ *
+ * A snapshot is plain JSON. Decode one read back from outside the program
+ * rather than casting it, so a malformed or older recording is refused at the
+ * boundary instead of replaying wrong:
+ *
+ * ```ts
+ * const recorded = Schema.decodeUnknownSync(Discern.Model.Observations)(JSON.parse(text))
+ * ```
+ */
+export const Observations = Schema.Struct({
+  version: Schema.Literal(2),
+  entries: Schema.Record(Schema.String, Observation),
+});
+export type Observations = typeof Observations.Type;
 
 /** The minimum a store must do to back recording, caching or replay. */
 export interface ObservationStore {
@@ -198,6 +222,55 @@ const record = (
   }
 };
 
+/**
+ * Validate answers read from a store by the same rules `DecisionModel.make`
+ * applies to a provider.
+ *
+ * A stored answer was validated when it was recorded, but a store can be loaded
+ * from a file, so by the time it is read back it may have been edited or
+ * corrupted. Interceptors sit above validation, so without this a probability
+ * of 7 would be replayed as a confident answer.
+ */
+const validateStored = (
+  decisions: Record<string, Decision.Any>,
+  hits: Answers,
+): Effect.Effect<Answers, AiError.AiError> => {
+  const ids = Object.keys(hits);
+  if (ids.length === 0) return Effect.succeed(hits);
+  const asked: Record<string, Decision.Any> = Object.create(null);
+  // A stored answer is in validated form, which drops the provider's `_tag`.
+  // Restore it from the decision so the provider-side rules apply unchanged.
+  const tagged: Record<string, unknown> = Object.create(null);
+  for (const id of ids) {
+    const decision = decisions[id]!;
+    const answer = hits[id];
+    asked[id] = decision;
+    tagged[id] = answer !== null && typeof answer === "object" ? { ...answer, _tag: decision._tag } : answer;
+  }
+  const stored = DecisionModel.make({
+    decide: () =>
+      Effect.succeed({
+        answers: tagged as DecisionModel.ProviderResponse["answers"],
+        usage: { inputTokens: undefined, outputTokens: undefined },
+      }),
+  });
+  return Effect.flatMap(stored, (model) =>
+    model.decide(Decision.make({ input: Schema.Null, decisions: asked }), { input: null }),
+  ).pipe(
+    Effect.map((response) => response.answers as Answers),
+    Effect.mapError((error) =>
+      discernError(
+        "observation",
+        new AiError.InvalidOutputError({
+          description: `A stored observation failed validation: ${
+            error.reason._tag === "InvalidOutputError" ? error.reason.description : error.message
+          }`,
+        }),
+      ),
+    ),
+  );
+};
+
 /** Build a `DecisionModel` whose `decide` is supplied as an untyped function. */
 const fromDecide = (
   decide: (definition: AnyDefinition, input: unknown) => Effect.Effect<any, AiError.AiError, any>,
@@ -246,10 +319,9 @@ export const replaying = (
   return (inner) =>
     fromDecide((definition, input) =>
       Effect.flatMap(encodeState(definition, input), (state) => {
-        const { hits, missing } = split(definition, state, lookup);
+        const { hits: stored, missing } = split(definition, state, lookup);
         const missingIds = Object.keys(missing);
-        if (missingIds.length === 0) return Effect.succeed({ answers: hits, usage: emptyUsage() });
-        if (onMissing === "fail") {
+        if (missingIds.length > 0 && onMissing === "fail") {
           return Effect.fail(
             discernError(
               "replaying",
@@ -261,11 +333,14 @@ export const replaying = (
             ),
           );
         }
-        const reduced = Decision.make({ input: definition.input, decisions: missing });
-        return Effect.map(inner.decide(reduced as never, { input } as never), (response) => ({
-          answers: { ...hits, ...(response.answers as Answers) },
-          usage: response.usage,
-        }));
+        return Effect.flatMap(validateStored(definition.decisions, stored), (hits) => {
+          if (missingIds.length === 0) return Effect.succeed({ answers: hits, usage: emptyUsage() });
+          const reduced = Decision.make({ input: definition.input, decisions: missing });
+          return Effect.map(inner.decide(reduced as never, { input } as never), (response) => ({
+            answers: { ...hits, ...(response.answers as Answers) },
+            usage: response.usage,
+          }));
+        });
       }),
     );
 };
@@ -280,17 +355,19 @@ export const caching =
   (inner) =>
     fromDecide((definition, input) =>
       Effect.flatMap(encodeState(definition, input), (state) => {
-        const { hits, missing, addresses } = split(definition, state, into);
-        if (Object.keys(missing).length === 0) {
-          return Effect.succeed({ answers: hits, usage: emptyUsage() });
-        }
-        const reduced = Decision.make({ input: definition.input, decisions: missing });
-        return Effect.flatMap(CurrentRegion.useSync((path) => path), (regionPath) =>
-          Effect.map(inner.decide(reduced as never, { input } as never), (response) => {
-            record(into, missing, addresses, response.answers as Answers, regionPath);
-            return { answers: { ...hits, ...(response.answers as Answers) }, usage: response.usage };
-          }),
-        );
+        const { hits: stored, missing, addresses } = split(definition, state, into);
+        return Effect.flatMap(validateStored(definition.decisions, stored), (hits) => {
+          if (Object.keys(missing).length === 0) {
+            return Effect.succeed({ answers: hits, usage: emptyUsage() });
+          }
+          const reduced = Decision.make({ input: definition.input, decisions: missing });
+          return Effect.flatMap(CurrentRegion.useSync((path) => path), (regionPath) =>
+            Effect.map(inner.decide(reduced as never, { input } as never), (response) => {
+              record(into, missing, addresses, response.answers as Answers, regionPath);
+              return { answers: { ...hits, ...(response.answers as Answers) }, usage: response.usage };
+            }),
+          );
+        });
       }),
     );
 

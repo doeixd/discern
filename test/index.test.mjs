@@ -209,7 +209,10 @@ test("reusing one decision id for two different definitions is rejected", () => 
   const a = OnChange.probability({ id: "risk", instructions: "Risky" });
   const b = OnChange.probability({ id: "risk", instructions: "Something else entirely" });
 
-  assert.throws(() => Discern.and(a.above(0.8), b.above(0.8)), /Decision id collision/);
+  assert.throws(
+    () => Discern.and(a.above(0.8), b.above(0.8)),
+    (error) => error instanceof Discern.DecisionIdCollisionError && error.decisionId === "risk",
+  );
 });
 
 test("Eval.sweep reuses one semantic observation per example across thresholds", async () => {
@@ -558,9 +561,10 @@ test("input objects are addressed structurally, so key order does not split the 
   assert.equal(calls, 1, "the same JSON object in a different key order is the same input");
 });
 
-test("ask requires a schema-scoped decision", () => {
+test("ask with an unscoped decision fails as a defect rather than throwing", async () => {
   const unscoped = Discern.probability({ id: "u", instructions: "x" });
-  assert.throws(() => Discern.ask(unscoped, "x"), /requires a schema-scoped decision/);
+  const effect = Discern.ask(unscoped, "x");
+  await assert.rejects(() => run(effect, () => ({})), /requires a schema-scoped decision/);
 });
 
 test("Eval.sweep skips decisions that deterministic structure already settles", async () => {
@@ -663,4 +667,372 @@ test("load replaces the store, so a snapshot round-trips exactly", async () => {
 test("an observation format from another version is rejected, not trusted", () => {
   assert.throws(() => Model.store({ version: 1, entries: {} }), /Unsupported observation format v1/);
   assert.throws(() => Model.store().load({ version: 99, entries: {} }), /Unsupported observation format v99/);
+});
+
+test("a miss bound on the wrong side of its match bound is refused when the pattern is built", () => {
+  const OnChange = Discern.on(Schema.String);
+  const risk = OnChange.probability({ id: "risk", instructions: "Risky" });
+  const impact = OnChange.classify({ id: "impact", instructions: "Impact", criteria: { none: "n", breaking: "b" } });
+  const refused = (miss, match) => (error) =>
+    error instanceof Discern.InvalidThresholdError && error.miss === miss && error.match === match;
+
+  assert.throws(() => risk.above(0.5, { missBelow: 0.8 }), refused(0.8, 0.5));
+  assert.throws(() => risk.atLeast(0.5, { missBelow: 0.8 }), refused(0.8, 0.5));
+  assert.throws(() => risk.below(0.5, { missAbove: 0.2 }), refused(0.2, 0.5));
+  assert.throws(() => risk.atMost(0.5, { missAbove: 0.2 }), refused(0.2, 0.5));
+  assert.throws(() => risk.band({ match: 0.5, miss: 0.8 }), refused(0.8, 0.5));
+  assert.throws(() => impact.is("breaking", { match: 0.5, miss: 0.8 }), refused(0.8, 0.5));
+
+  // Equal bounds are a plain two-way threshold, not a mistake.
+  risk.above(0.5, { missBelow: 0.5 });
+  risk.below(0.5, { missAbove: 0.5 });
+  risk.band({ match: 0.5, miss: 0.5 });
+});
+
+test("Eval.calibrate refuses an empty candidate list before asking the model", async () => {
+  let calls = 0;
+  const model = (options) => {
+    calls += 1;
+    return answersFor(options, () => probabilityAnswer(0.9));
+  };
+  const risky = Discern.on(Schema.String).probability({ id: "risk", instructions: "Risky" });
+
+  // Returned as a defect inside the Effect, not thrown by the call.
+  const effect = Discern.Eval.calibrate({
+    schema: Schema.String,
+    values: [],
+    pattern: (threshold) => risky.atLeast(threshold),
+    examples: [{ input: "x", expected: true }],
+  });
+  await assert.rejects(() => run(effect, model), /at least one candidate value/);
+  assert.equal(calls, 0);
+});
+
+test("a snapshot decodes through the Observations schema and replays", async () => {
+  const model = (options) => answersFor(options, () => probabilityAnswer(0.95));
+  const risky = Discern.on(Schema.String).probability({ id: "risk", instructions: "Risky" });
+  const policy = Discern.type(Schema.String).pipe(
+    Discern.when(risky.above(0.8), () => "block"),
+    Discern.orElse(() => "ship"),
+  );
+  const store = Model.store();
+  await run(policy("x"), model, [Model.recording(store)]);
+
+  const text = JSON.stringify(store.snapshot());
+  const decoded = Schema.decodeUnknownSync(Model.Observations)(JSON.parse(text));
+  assert.equal(await Effect.runPromise(policy.replay("x", decoded)), "block");
+});
+
+test("the Observations schema refuses a malformed or foreign recording", () => {
+  const decode = Schema.decodeUnknownSync(Model.Observations);
+  const entry = { decisionId: "risk", fingerprint: "df_x", kind: "Probability", region: [], answer: {} };
+
+  assert.throws(() => decode({ version: 1, entries: {} }));
+  assert.throws(() => decode({ version: 2 }));
+  assert.throws(() => decode({ version: 2, entries: { o_x: { ...entry, kind: "Guess" } } }));
+  assert.throws(() => decode({ version: 2, entries: { o_x: { ...entry, region: "root" } } }));
+  assert.equal(decode({ version: 2, entries: { o_x: entry } }).entries.o_x.decisionId, "risk");
+});
+
+/** The status a pattern gives for one answer to its only decision. */
+const statusOf = (pattern, answer) => pattern.evaluate(undefined, { [pattern.decisions[0].id]: answer })._tag;
+
+test("probability thresholds split exactly at their bounds", () => {
+  const risk = Discern.on(Schema.String).probability({ id: "risk", instructions: "Risky" });
+  const at = (pattern, p) => statusOf(pattern, probabilityAnswer(p));
+
+  // Strict and inclusive differ only at the threshold itself.
+  assert.equal(at(risk.above(0.5), 0.5), "Miss");
+  assert.equal(at(risk.above(0.5), 0.51), "Match");
+  assert.equal(at(risk.atLeast(0.5), 0.5), "Match");
+  assert.equal(at(risk.below(0.2), 0.2), "Miss");
+  assert.equal(at(risk.below(0.2), 0.19), "Match");
+  assert.equal(at(risk.atMost(0.2), 0.2), "Match");
+
+  // The miss bound is inclusive; everything strictly between is Uncertain.
+  const guarded = risk.above(0.8, { missBelow: 0.5 });
+  assert.equal(at(guarded, 0.5), "Miss");
+  assert.equal(at(guarded, 0.6), "Uncertain");
+  assert.equal(at(guarded, 0.8), "Uncertain");
+  assert.equal(at(guarded, 0.81), "Match");
+  assert.equal(at(risk.atLeast(0.8, { missBelow: 0.5 }), 0.8), "Match");
+
+  const low = risk.below(0.2, { missAbove: 0.5 });
+  assert.equal(at(low, 0.3), "Uncertain");
+  assert.equal(at(low, 0.5), "Miss");
+
+  const band = risk.band({ match: 0.8, miss: 0.5 });
+  assert.equal(at(band, 0.8), "Match");
+  assert.equal(at(band, 0.65), "Uncertain");
+  assert.equal(at(band, 0.5), "Miss");
+
+  const between = risk.between(0.4, 0.6);
+  assert.equal(at(between, 0.4), "Match");
+  assert.equal(at(between, 0.6), "Match");
+  assert.equal(at(between, 0.61), "Miss");
+
+  // Equal bounds leave no room for Uncertain.
+  for (const p of [0, 0.49, 0.5, 0.51, 1]) {
+    assert.notEqual(at(risk.above(0.5, { missBelow: 0.5 }), p), "Uncertain");
+  }
+});
+
+test("a classification threshold reads the probability of the label, not the chosen label", () => {
+  const impact = Discern.on(Schema.String).classify({
+    id: "impact",
+    instructions: "Impact",
+    criteria: { none: "n", additive: "a", breaking: "b" },
+  });
+
+  // Without thresholds, only the provider's chosen label counts.
+  assert.equal(statusOf(impact.is("breaking"), classifyAnswer("breaking", { none: 0.3, additive: 0.3, breaking: 0.4 })), "Match");
+  assert.equal(statusOf(impact.is("breaking"), classifyAnswer("none", { none: 0.4, additive: 0.2, breaking: 0.4 })), "Miss");
+
+  const sure = impact.is("breaking", { match: 0.8, miss: 0.3 });
+  assert.equal(statusOf(sure, classifyAnswer("breaking", { none: 0.1, additive: 0.1, breaking: 0.8 })), "Match");
+  assert.equal(statusOf(sure, classifyAnswer("breaking", { none: 0.25, additive: 0.25, breaking: 0.5 })), "Uncertain");
+  assert.equal(statusOf(sure, classifyAnswer("none", { none: 0.4, additive: 0.3, breaking: 0.3 })), "Miss");
+
+  // `miss` defaults to `match`, so omitting it makes the check two-valued.
+  const defaulted = impact.is("breaking", {});
+  assert.equal(statusOf(defaulted, classifyAnswer("breaking", { none: 0.11, additive: 0.1, breaking: 0.79 })), "Miss");
+  assert.equal(statusOf(defaulted, classifyAnswer("breaking", { none: 0.1, additive: 0.1, breaking: 0.8 })), "Match");
+
+  // Clearing `match` without the margin is Uncertain, not a Match or a Miss.
+  const clear = impact.is("breaking", { match: 0.5, margin: 0.2 });
+  assert.equal(statusOf(clear, classifyAnswer("breaking", { none: 0, additive: 0.45, breaking: 0.55 })), "Uncertain");
+  assert.equal(statusOf(clear, classifyAnswer("breaking", { none: 0.1, additive: 0.3, breaking: 0.6 })), "Match");
+});
+
+test("oneOf, not and margin read a classification", () => {
+  const impact = Discern.on(Schema.String).classify({
+    id: "impact",
+    instructions: "Impact",
+    criteria: { none: "n", additive: "a", breaking: "b" },
+  });
+  const additive = classifyAnswer("additive", { none: 0.2, additive: 0.5, breaking: 0.3 });
+
+  assert.equal(statusOf(impact.oneOf("additive", "breaking"), additive), "Match");
+  assert.equal(statusOf(impact.oneOf("none", "breaking"), additive), "Miss");
+  assert.equal(statusOf(impact.not("breaking"), additive), "Match");
+  assert.equal(statusOf(impact.not("additive"), additive), "Miss");
+  assert.equal(statusOf(impact.margin("additive", "breaking", 0.2), additive), "Match");
+  assert.equal(statusOf(impact.margin("additive", "breaking", 0.21), additive), "Miss");
+});
+
+test("rating comparisons are inclusive at both ends of the scale", () => {
+  const severity = Discern.on(Schema.String).rate({
+    id: "severity",
+    instructions: "Severity",
+    criteria: ["trivial", "minor", "major", "critical"],
+  });
+  const even = { trivial: 0.25, minor: 0.25, major: 0.25, critical: 0.25 };
+  const rated = (rating, label) => ({ ...rateAnswer(rating, even), label });
+
+  assert.equal(statusOf(severity.atLeast("trivial"), rated(0, "trivial")), "Match");
+  assert.equal(statusOf(severity.atMost("critical"), rated(3, "critical")), "Match");
+  assert.equal(statusOf(severity.atLeast("major"), rated(2, "major")), "Match");
+  assert.equal(statusOf(severity.atLeast("major"), rated(1, "minor")), "Miss");
+  assert.equal(statusOf(severity.atMost("minor"), rated(1, "minor")), "Match");
+  assert.equal(statusOf(severity.between("minor", "major"), rated(0, "trivial")), "Miss");
+  assert.equal(statusOf(severity.between("minor", "major"), rated(2, "major")), "Match");
+  assert.equal(statusOf(severity.between("minor", "major"), rated(3, "critical")), "Miss");
+  assert.equal(statusOf(severity.is("major"), rated(2, "major")), "Match");
+});
+
+test("two cases that reuse a decision id for different definitions are refused when the policy is finished", () => {
+  const OnChange = Discern.on(Schema.String);
+  const a = OnChange.probability({ id: "risk", instructions: "Risky" });
+  const b = OnChange.probability({ id: "risk", instructions: "Something else entirely" });
+  const matcher = Discern.type(Schema.String).pipe(
+    Discern.when(a.above(0.8), () => "a"),
+    Discern.when(b.above(0.8), () => "b"),
+  );
+
+  assert.throws(
+    () => matcher.pipe(Discern.orElse(() => "neither")),
+    (error) => error instanceof Discern.DecisionIdCollisionError && error.decisionId === "risk",
+  );
+
+  // The same definition under the same id is one decision, not a collision.
+  const again = OnChange.probability({ id: "risk", instructions: "Risky" });
+  Discern.type(Schema.String).pipe(
+    Discern.when(a.above(0.8), () => "a"),
+    Discern.when(again.below(0.2), () => "b"),
+    Discern.orElse(() => "neither"),
+  );
+});
+
+test("a recording that decodes but holds an impossible answer fails on replay instead of deciding", async () => {
+  const model = (options) => answersFor(options, () => probabilityAnswer(0.95));
+  const risky = Discern.on(Schema.String).probability({ id: "risk", instructions: "Risky" });
+  const policy = Discern.type(Schema.String).pipe(
+    Discern.when(risky.above(0.8), () => "block"),
+    Discern.orElse(() => "ship"),
+  );
+  const store = Model.store();
+  await run(policy("x"), model, [Model.recording(store)]);
+
+  // The schema checks the envelope; the answer inside is checked on replay.
+  const tampered = JSON.parse(JSON.stringify(store.snapshot()));
+  for (const entry of Object.values(tampered.entries)) entry.answer = { probability: 7 };
+  const decoded = Schema.decodeUnknownSync(Model.Observations)(tampered);
+
+  const invalidObservation = (error) =>
+    Model.isInvalidObservation(error) &&
+    !Model.isReplayMiss(error) &&
+    /probability outside \[0, 1\]/.test(error.message);
+
+  await assert.rejects(() => Effect.runPromise(policy.replay("x", decoded)), invalidObservation);
+
+  // A cache loaded from the same file is read back through the same check,
+  // and never falls through to the model to paper over the bad entry.
+  let calls = 0;
+  const counting = (options) => {
+    calls += 1;
+    return model(options);
+  };
+  await assert.rejects(() => run(policy("x"), counting, [Model.caching(Model.store(decoded))]), invalidObservation);
+  assert.equal(calls, 0);
+});
+
+test("a recorded answer naming a label the decision does not have fails on replay", async () => {
+  const model = (options) =>
+    answersFor(options, () => classifyAnswer("breaking", { none: 0.1, breaking: 0.9 }));
+  const impact = Discern.on(Schema.String).classify({
+    id: "impact",
+    instructions: "Impact",
+    criteria: { none: "n", breaking: "b" },
+  });
+  const policy = Discern.match(impact).pipe(
+    Discern.caseOf("none", () => "ship"),
+    Discern.caseOf("breaking", () => "block"),
+    Discern.exhaustive,
+  );
+  const store = Model.store();
+  await run(policy("x"), model, [Model.recording(store)]);
+  assert.equal(await Effect.runPromise(policy.replay("x", store.snapshot())), "block");
+
+  const tampered = JSON.parse(JSON.stringify(store.snapshot()));
+  for (const entry of Object.values(tampered.entries)) {
+    entry.answer = { label: "catastrophic", probabilities: { none: 0.1, breaking: 0.9 } };
+  }
+  await assert.rejects(
+    () => Effect.runPromise(policy.replay("x", Schema.decodeUnknownSync(Model.Observations)(tampered))),
+    (error) => Model.isInvalidObservation(error) && /unknown label/.test(error.message),
+  );
+});
+
+test("replay with fall-through checks the recorded half and asks the model for the rest", async () => {
+  let asked = [];
+  const model = (options) => {
+    asked = Object.keys(options.decisions);
+    return answersFor(options, () => probabilityAnswer(0.95));
+  };
+  const OnChange = Discern.on(Schema.String);
+  const a = OnChange.probability({ id: "a", instructions: "First" });
+  const b = OnChange.probability({ id: "b", instructions: "Second" });
+  const first = Discern.type(Schema.String).pipe(
+    Discern.when(a.above(0.8), () => "a"),
+    Discern.orElse(() => "none"),
+  );
+  const both = Discern.type(Schema.String).pipe(
+    Discern.when(Discern.and(a.above(0.8), b.above(0.8)), () => "both"),
+    Discern.orElse(() => "none"),
+  );
+  const store = Model.store();
+  await run(first("x"), model, [Model.recording(store)]);
+
+  asked = [];
+  const value = await run(both("x"), model, [Model.replaying(store.snapshot(), { onMissing: "ask" })]);
+  assert.equal(value, "both");
+  assert.deepEqual(asked, ["b"], "only the unrecorded decision reaches the model");
+});
+
+test("Eval.calibrate with one candidate returns it", async () => {
+  const model = (options) => answersFor(options, () => probabilityAnswer(Number(options.state)));
+  const risky = Discern.on(Schema.String).probability({ id: "risk", instructions: "Risky" });
+  const result = await run(
+    Discern.Eval.calibrate({
+      schema: Schema.String,
+      values: [0.6],
+      pattern: (threshold) => risky.atLeast(threshold),
+      examples: [
+        { input: "0.9", expected: true },
+        { input: "0.1", expected: false },
+      ],
+    }),
+    model,
+  );
+  assert.equal(result.best.value, 0.6);
+  assert.equal(result.results.length, 1);
+});
+
+test("a sweep whose candidates reuse one decision id for different definitions fails as a defect", async () => {
+  let calls = 0;
+  const model = (options) => {
+    calls += 1;
+    return answersFor(options, () => probabilityAnswer(0.9));
+  };
+  const OnChange = Discern.on(Schema.String);
+  const effect = Discern.Eval.sweep({
+    schema: Schema.String,
+    values: [0.5, 0.7],
+    // A new definition per value, all claiming the id "risk".
+    pattern: (threshold) => OnChange.probability({ id: "risk", instructions: `Risky past ${threshold}` }).atLeast(threshold),
+    examples: [{ input: "x", expected: true }],
+  });
+
+  await assert.rejects(
+    () => run(effect, model),
+    (error) => error instanceof Discern.DecisionIdCollisionError && error.decisionId === "risk",
+  );
+  assert.equal(calls, 0);
+});
+
+test("a rating between two levels satisfies neither atLeast the upper nor atMost the lower", () => {
+  const severity = Discern.on(Schema.String).rate({
+    id: "severity",
+    instructions: "Severity",
+    criteria: ["trivial", "minor", "major", "critical"],
+  });
+  // Weighted position 1.5, with `major` the most probable level.
+  const halfway = {
+    ...rateAnswer(1.5, { trivial: 0.05, minor: 0.4, major: 0.5, critical: 0.05 }),
+    label: "major",
+  };
+
+  assert.equal(statusOf(severity.atLeast("major"), halfway), "Miss");
+  assert.equal(statusOf(severity.atMost("minor"), halfway), "Miss");
+  // The documented ways to place the gap.
+  assert.equal(statusOf(severity.atLeast("minor"), halfway), "Match");
+  assert.equal(statusOf(severity.atMost("major"), halfway), "Match");
+  assert.equal(statusOf(severity.between("minor", "major"), halfway), "Match");
+  // `is` reads the most probable level, not the position.
+  assert.equal(statusOf(severity.is("major"), halfway), "Match");
+});
+
+test("a reversed range is refused when the pattern is built", () => {
+  const OnChange = Discern.on(Schema.String);
+  const risk = OnChange.probability({ id: "risk", instructions: "Risky" });
+  const severity = OnChange.rate({
+    id: "severity",
+    instructions: "Severity",
+    criteria: ["trivial", "minor", "major", "critical"],
+  });
+  const refused = (low, high) => (error) =>
+    error instanceof Discern.InvalidRangeError && error.low === low && error.high === high;
+
+  assert.throws(() => risk.between(0.6, 0.4), refused(0.6, 0.4));
+  assert.throws(() => severity.between("major", "minor"), refused("major", "minor"));
+  assert.throws(() => severity.between("critical", "trivial"), refused("critical", "trivial"));
+
+  // Equal ends match exactly that value or level.
+  const exactly = risk.between(0.5, 0.5);
+  assert.equal(statusOf(exactly, probabilityAnswer(0.5)), "Match");
+  assert.equal(statusOf(exactly, probabilityAnswer(0.51)), "Miss");
+  const onlyMajor = severity.between("major", "major");
+  const even = { trivial: 0.25, minor: 0.25, major: 0.25, critical: 0.25 };
+  assert.equal(statusOf(onlyMajor, { ...rateAnswer(2, even), label: "major" }), "Match");
+  assert.equal(statusOf(onlyMajor, { ...rateAnswer(1.5, even), label: "major" }), "Miss");
 });

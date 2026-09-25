@@ -183,3 +183,77 @@ const handRolled: Discern.Model.Budget = {
   reset: () => {},
 };
 void handRolled;
+
+// Label sets must be finite and non-empty, or every label check downstream
+// (`is`, `caseOf`, `exhaustive`, `atLeast`) would pass vacuously.
+declare const openCriteria: Record<string, string>;
+declare const toneCriteria: Record<`tone-${string}`, string>;
+declare const pixelCriteria: Record<"auto" | `${number}px`, string>;
+declare const openLevels: Array<string>;
+
+// @ts-expect-error a label set typed `string` is refused
+Change.classify({ instructions: "Open", criteria: openCriteria });
+// @ts-expect-error a label set typed `string` is refused, unscoped too
+Discern.classify({ instructions: "Open", criteria: openCriteria });
+// @ts-expect-error a template label has infinitely many members
+Change.classify({ instructions: "Pattern", criteria: toneCriteria });
+// @ts-expect-error one infinite member refuses the whole set
+Discern.classify({ instructions: "Mixed", criteria: pixelCriteria });
+// @ts-expect-error an empty label set is refused
+Change.classify({ instructions: "Empty", criteria: {} });
+// @ts-expect-error open rating levels are refused
+Change.rate({ instructions: "Open", criteria: openLevels });
+// @ts-expect-error empty rating levels are refused
+Discern.rate({ instructions: "Empty", criteria: [] });
+
+Change.classify({ instructions: "Closed", criteria: { "tone-calm": "calm" } });
+Discern.classify({ instructions: "One", criteria: { none: "none" } });
+const closedLevels = ["low", "high"] as const;
+Change.rate({ instructions: "Declared", criteria: closedLevels });
+Discern.rate({ instructions: "Inline", criteria: ["low", "high"] });
+
+declare const autocompleteCriteria: Record<"a" | (string & {}), string>;
+declare const numericCriteria: Record<`${number}`, string>;
+declare const upperCriteria: Record<Uppercase<string>, string>;
+declare const booleanCriteria: Record<`${boolean}`, string>;
+declare const literalLevels: ReadonlyArray<"low" | "high">;
+
+// @ts-expect-error the autocomplete idiom `"a" | (string & {})` is still open
+Change.classify({ instructions: "Autocomplete", criteria: autocompleteCriteria });
+// @ts-expect-error `${number}` has infinitely many members
+Change.classify({ instructions: "Numeric", criteria: numericCriteria });
+// @ts-expect-error `Uppercase<string>` has infinitely many members
+Change.classify({ instructions: "Upper", criteria: upperCriteria });
+
+// `${boolean}` is exactly "true" | "false", so it is finite and still checked.
+const flag = Change.classify({ instructions: "Flag", criteria: booleanCriteria });
+flag.is("true");
+// @ts-expect-error not one of "true" | "false"
+flag.is("maybe");
+
+// A non-const array of a literal union is finite.
+const scale = Change.rate({ instructions: "Scale", criteria: literalLevels });
+scale.atLeast("high");
+// @ts-expect-error not a level on the scale
+scale.atLeast("medium");
+
+// The recording schema's kinds are exactly Effect's decision kinds, so a new
+// decision kind cannot be recorded without the schema learning it.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const kindsAgree: Same<Discern.Model.Observation["kind"], Discern.AnyDecision["_tag"]> = true;
+void kindsAgree;
+
+// Calibration needs a candidate to choose.
+Discern.Eval.calibrate({
+  schema: Schema.String,
+  // @ts-expect-error an empty candidate list has nothing to choose from
+  values: [],
+  pattern: (threshold: number) => risky.atLeast(threshold),
+  examples: [],
+});
+Discern.Eval.calibrate({
+  schema: Schema.String,
+  values: [0.5, 0.7],
+  pattern: (threshold) => risky.atLeast(threshold),
+  examples: [],
+});
